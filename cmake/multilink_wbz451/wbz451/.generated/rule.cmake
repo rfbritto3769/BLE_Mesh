@@ -1,6 +1,6 @@
 # The following functions contains all the flags passed to the different build stages.
 
-set(PACK_REPO_PATH "C:/Users/x44455/.mchp_packs" CACHE PATH "Path to the root of a pack repository.")
+set(PACK_REPO_PATH "C:/Users/X44455/.mchp_packs" CACHE PATH "Path to the root of a pack repository.")
 
 function(multilink_wbz451_wbz451_wbz451_XC32_assemble_rule target)
     set(options
@@ -62,8 +62,8 @@ function(multilink_wbz451_wbz451_wbz451_XC32_compile_rule target)
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/config/wbz451/ble/profile_ble"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/config/wbz451/ble/service_ble"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/config/wbz451/driver/pds/include"
-        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/packs/CMSIS"
-        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/packs/CMSIS/CMSIS/Core/Include"
+        PRIVATE "firmware/src/packs/CMSIS"
+        PRIVATE "firmware/src/packs/CMSIS/CMSIS/Core/Include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/packs/WBZ451_DFP"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/third_party/rtos/FreeRTOS/Source/include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/third_party/rtos/FreeRTOS/Source/portable/GCC/SAM/ARM_CM4F"
@@ -94,8 +94,8 @@ function(multilink_wbz451_wbz451_wbz451_XC32_compile_cpp_rule target)
     target_include_directories(${target}
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/config/wbz451"
-        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/packs/CMSIS"
-        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/packs/CMSIS/CMSIS/Core/Include"
+        PRIVATE "firmware/src/packs/CMSIS"
+        PRIVATE "firmware/src/packs/CMSIS/CMSIS/Core/Include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/packs/WBZ451_DFP"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/third_party/rtos/FreeRTOS/Source/include"
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../firmware/src/third_party/rtos/FreeRTOS/Source/portable/GCC/SAM/ARM_CM4F"

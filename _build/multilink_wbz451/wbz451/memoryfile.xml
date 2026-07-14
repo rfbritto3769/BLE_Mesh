@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project>
-  <executable name="C:\Users\x44455\Documents\multilink\out\multilink_wbz451\wbz451.elf">
+  <executable name="C:\Users\X44455\Documents\BLE_Mesh\BLE_Mesh\out\multilink_wbz451\wbz451.elf">
     <memory name="program">
       <units>bytes</units>
       <length>966656</length>
-      <used>190108</used>
-      <free>776548</free>
+      <used>190132</used>
+      <free>776524</free>
     </memory>
     <memory name="data">
       <units>bytes</units>

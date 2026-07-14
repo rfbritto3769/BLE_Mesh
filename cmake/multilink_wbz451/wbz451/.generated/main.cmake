@@ -45,16 +45,16 @@ endif()
 
 
 # Main target for this project
-add_executable(multilink_wbz451_wbz451_image_c9pycGeW ${multilink_wbz451_wbz451_library_list})
+add_executable(multilink_wbz451_wbz451_image_qG1qnUzK ${multilink_wbz451_wbz451_library_list})
 
-set_target_properties(multilink_wbz451_wbz451_image_c9pycGeW PROPERTIES
+set_target_properties(multilink_wbz451_wbz451_image_qG1qnUzK PROPERTIES
     OUTPUT_NAME "wbz451"
     SUFFIX ".elf"
     RUNTIME_OUTPUT_DIRECTORY "${multilink_wbz451_wbz451_output_dir}")
-target_link_libraries(multilink_wbz451_wbz451_image_c9pycGeW PRIVATE ${multilink_wbz451_wbz451_wbz451_XC32_FILE_TYPE_link})
+target_link_libraries(multilink_wbz451_wbz451_image_qG1qnUzK PRIVATE ${multilink_wbz451_wbz451_wbz451_XC32_FILE_TYPE_link})
 
 # Add the link options from the rule file.
-multilink_wbz451_wbz451_link_rule( multilink_wbz451_wbz451_image_c9pycGeW)
+multilink_wbz451_wbz451_link_rule( multilink_wbz451_wbz451_image_qG1qnUzK)
 
 # Add bin2hex target for converting built file to a .hex file.
 string(REGEX REPLACE [.]elf$ .hex multilink_wbz451_wbz451_image_name_hex ${multilink_wbz451_wbz451_image_name})
@@ -62,7 +62,7 @@ add_custom_target(multilink_wbz451_wbz451_Bin2Hex ALL
     COMMAND ${MP_BIN2HEX} \"${multilink_wbz451_wbz451_output_dir}/${multilink_wbz451_wbz451_image_name}\"
     BYPRODUCTS ${multilink_wbz451_wbz451_output_dir}/${multilink_wbz451_wbz451_image_name_hex}
     COMMENT "Convert built file to .hex")
-add_dependencies(multilink_wbz451_wbz451_Bin2Hex multilink_wbz451_wbz451_image_c9pycGeW)
+add_dependencies(multilink_wbz451_wbz451_Bin2Hex multilink_wbz451_wbz451_image_qG1qnUzK)
 
 
 

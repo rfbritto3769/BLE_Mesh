@@ -228,10 +228,12 @@ void APP_Tasks ( void )
             {
                 SYS_DEBUG_PRINT(SYS_ERROR_INFO, "\r\n=== UNPROVISIONED (temp ID=%d) ===\r\n", (int)activeNodeId);
                 SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Provision: 00 00 00 05 05 XX\r\n");
+                LED_Dimmer_SetRGB(0, 0, 0);
             }
             else
             {
                 SYS_DEBUG_PRINT(SYS_ERROR_INFO, "\r\n=== DIMMER_%02d (Provisioned) ===\r\n", (int)activeNodeId);
+                LED_Dimmer_SetRGB(0, 100, 0);
             }
 
             BLE_GAP_SetAdvEnable(0x01, 0x00);
