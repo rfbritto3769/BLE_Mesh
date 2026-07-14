@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__mplab-docs__get_example_projects",
+      "mcp__mplab-docs__search_evk_user_guide"
+    ]
+  }
+}

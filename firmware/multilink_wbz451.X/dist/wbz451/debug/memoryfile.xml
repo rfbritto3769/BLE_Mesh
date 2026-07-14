@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <executable name="dist/wbz451/debug/multilink_wbz451.X.debug.elf">
+    <memory name="program">
+      <units>bytes</units>
+      <length>966656</length>
+      <used>183958</used>
+      <free>782698</free>
+    </memory>
+    <memory name="data">
+      <units>bytes</units>
+      <length>131072</length>
+      <used>75595</used>
+      <free>55477</free>
+    </memory>
+  </executable>
+</project>

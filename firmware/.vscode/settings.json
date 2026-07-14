@@ -1,0 +1,5 @@
+{
+    "mplab.clangd.compileCommandsDir": "${workspaceFolder}\\_build\\multilink_wbz451\\wbz451",
+    "mplab.clangd.path": "c:\\Program Files\\Microchip\\xc32\\v4.60\\bin\\xc32-clangd.exe",
+    "C_Cpp.intelliSenseEngine": "disabled"
+}

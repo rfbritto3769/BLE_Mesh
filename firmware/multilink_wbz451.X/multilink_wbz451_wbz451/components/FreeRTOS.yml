@@ -1,0 +1,177 @@
+configVersion: 1.0.0
+componentName: FreeRTOS
+coreVersion: 5.9.0
+device: WBZ451
+library: []
+dependency:
+- dependencyPackage: class com.microchip.mcc.harmony.HarmonyModule
+  name: FreeRTOS
+  type: module
+  version: ''
+- dependencyPackage: ''
+  name: CMSIS_5
+  type: package
+  version: 5.9.0
+- dependencyPackage: ''
+  name: FreeRTOS-Kernel
+  type: package
+  version: V11.1.0
+- dependencyPackage: ''
+  name: core
+  type: package
+  version: v3.15.0
+- dependencyPackage: ''
+  name: crypto
+  type: package
+  version: v3.8.2
+- dependencyPackage: ''
+  name: csp
+  type: package
+  version: v3.22.0
+- dependencyPackage: ''
+  name: shd
+  type: package
+  version: v1.1.0
+- dependencyPackage: ''
+  name: wireless_ble
+  type: package
+  version: v1.4.0
+- dependencyPackage: ''
+  name: wireless_pic32cxbz_wbz
+  type: package
+  version: v1.5.0
+- dependencyPackage: ''
+  name: wireless_services
+  type: package
+  version: v2.0.0-E1
+- dependencyPackage: ''
+  name: wolfssl
+  type: package
+  version: v5.4.0
+customDataClassName: com.microchip.utils_mh3.utils.persistence.CustomModuleData
+data:
+  attachments: {}
+  elementPosition:
+    attributes:
+      id: __ROOTVIEW
+    children:
+    - children:
+      - attributes:
+          id: FreeRTOS
+          x: '640'
+          y: '20'
+        type: ElementPosition
+      type: ElementPositions
+    type: ComponentGraph
+  symbols:
+    FREERTOS_EXPECTED_IDLE_TIME_BEFORE_SLEEP:
+      attributes:
+        id: FREERTOS_EXPECTED_IDLE_TIME_BEFORE_SLEEP
+        label: Expected idle time before sleep
+      children:
+      - children:
+        - attributes:
+            id: visible
+          children:
+          - type: Value
+            value: 'true'
+          type: Boolean
+        type: Attributes
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: '5'
+          type: Dynamic
+        type: Values
+      type: Integer
+    FREERTOS_IDLE_HOOK:
+      attributes:
+        id: FREERTOS_IDLE_HOOK
+        label: Use Idle Hook
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    FREERTOS_INCLUDE_XTASKABORTDELAY:
+      attributes:
+        id: FREERTOS_INCLUDE_XTASKABORTDELAY
+        label: Include xTaskAbortDelay
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        - attributes:
+            value: 'false'
+          type: User
+        type: Values
+      type: Boolean
+    FREERTOS_MEMORY_MANAGEMENT_CHOICE:
+      attributes:
+        id: FREERTOS_MEMORY_MANAGEMENT_CHOICE
+        label: Memory Management Type
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: Heap_4
+          type: Dynamic
+        type: Values
+      type: Combo
+    FREERTOS_MINIMAL_STACK_SIZE:
+      attributes:
+        id: FREERTOS_MINIMAL_STACK_SIZE
+        label: Minimal Stack Size
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: '256'
+          type: Dynamic
+        type: Values
+      type: Integer
+    FREERTOS_TICKLESS_IDLE_CHOICE:
+      attributes:
+        id: FREERTOS_TICKLESS_IDLE_CHOICE
+        label: Tick Mode
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: Tickless_Idle
+          type: Dynamic
+        - attributes:
+            value: Tick_Interrupt
+          type: User
+        type: Values
+      type: Combo
+    FREERTOS_TICK_HOOK:
+      attributes:
+        id: FREERTOS_TICK_HOOK
+        label: Use Tick Hook
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    FREERTOS_USE_QUEUE_SETS:
+      attributes:
+        id: FREERTOS_USE_QUEUE_SETS
+        label: Use Queue Sets
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+  userData: {}

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <executable name="C:\Users\x44455\Documents\multilink\out\multilink_wbz451\wbz451.elf">
+    <memory name="program">
+      <units>bytes</units>
+      <length>966656</length>
+      <used>190108</used>
+      <free>776548</free>
+    </memory>
+    <memory name="data">
+      <units>bytes</units>
+      <length>131072</length>
+      <used>77419</used>
+      <free>53653</free>
+    </memory>
+  </executable>
+</project>

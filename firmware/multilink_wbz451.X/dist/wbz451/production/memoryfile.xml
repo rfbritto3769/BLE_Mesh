@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <executable name="dist/wbz451/production/multilink_wbz451.X.production.elf">
+    <memory name="program">
+      <units>bytes</units>
+      <length>966656</length>
+      <used>184048</used>
+      <free>782608</free>
+    </memory>
+    <memory name="data">
+      <units>bytes</units>
+      <length>131072</length>
+      <used>75595</used>
+      <free>55477</free>
+    </memory>
+  </executable>
+</project>

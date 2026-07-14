@@ -1,0 +1,199 @@
+configVersion: 1.0.0
+componentName: pic32cx_bz2_devsupport
+coreVersion: 5.9.0
+device: WBZ451
+library: []
+dependency:
+- dependencyPackage: class com.microchip.mcc.harmony.HarmonyModule
+  name: pic32cx_bz2_devsupport
+  type: module
+  version: ''
+- dependencyPackage: ''
+  name: CMSIS_5
+  type: package
+  version: 5.9.0
+- dependencyPackage: ''
+  name: FreeRTOS-Kernel
+  type: package
+  version: V11.1.0
+- dependencyPackage: ''
+  name: core
+  type: package
+  version: v3.15.0
+- dependencyPackage: ''
+  name: crypto
+  type: package
+  version: v3.8.2
+- dependencyPackage: ''
+  name: csp
+  type: package
+  version: v3.22.0
+- dependencyPackage: ''
+  name: shd
+  type: package
+  version: v1.1.0
+- dependencyPackage: ''
+  name: wireless_ble
+  type: package
+  version: v1.4.0
+- dependencyPackage: ''
+  name: wireless_pic32cxbz_wbz
+  type: package
+  version: v1.5.0
+- dependencyPackage: ''
+  name: wireless_services
+  type: package
+  version: v2.0.0-E1
+- dependencyPackage: ''
+  name: wolfssl
+  type: package
+  version: v5.4.0
+customDataClassName: com.microchip.utils_mh3.utils.persistence.CustomModuleData
+data:
+  attachments: {}
+  elementPosition:
+    attributes:
+      id: __ROOTVIEW
+    children:
+    - children:
+      - attributes:
+          id: pic32cx_bz2_devsupport
+          x: '30'
+          y: '140'
+        type: ElementPosition
+      type: ElementPositions
+    type: ComponentGraph
+  symbols:
+    AUTO_LOAD_PDS:
+      attributes:
+        id: AUTO_LOAD_PDS
+        label: Auto load PDS_SubSystem
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    BLESTACK_LOADED:
+      attributes:
+        id: BLESTACK_LOADED
+        label: BLESTACK_LOADED
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    BLE_PTA_SUPPORTED:
+      attributes:
+        id: BLE_PTA_SUPPORTED
+        label: PTA Support Required for BLE Stack
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    BLE_SLEEP_SUPPORTED:
+      attributes:
+        id: BLE_SLEEP_SUPPORTED
+        label: Sleep support required by BLE stack
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    CUSTOM_ANT_ENABLE:
+      attributes:
+        id: CUSTOM_ANT_ENABLE
+        label: Enable Custom Antenna Gain
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    DISABLE_APP_CODE_GEN:
+      attributes:
+        id: DISABLE_APP_CODE_GEN
+        label: Disable App Code Gen
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    ENABLE_DEEP_SLEEP:
+      attributes:
+        id: ENABLE_DEEP_SLEEP
+        label: Enable Deep Sleep (Retention RAM)
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    FREERTOS_CONFIG_PATH:
+      attributes:
+        id: FREERTOS_CONFIG_PATH
+        label: FREERTOS_CONFIG_PATH
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: config/wbz451/FreeRTOSConfig.h/
+          type: Dynamic
+        type: Values
+      type: String
+    PDS_LOADED:
+      attributes:
+        id: PDS_LOADED
+        label: PDS_LOADED
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    SLEEP_SUPPORTED:
+      attributes:
+        id: SLEEP_SUPPORTED
+        label: Sleep support required by System
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WSS_ENABLE_MODE:
+      attributes:
+        id: WSS_ENABLE_MODE
+        label: WSS_ENABLE_MODE
+      children:
+      - children:
+        - attributes:
+            id: pic32cx_bz2_devsupport
+            value: WSS_ENABLE_BLE
+          type: Dynamic
+        type: Values
+      type: String
+  userData: {}

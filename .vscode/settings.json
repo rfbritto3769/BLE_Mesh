@@ -1,0 +1,15 @@
+{
+    "mplab.clangd.arguments": [
+        "--header-insertion=never"
+    ],
+    "mplab.clangd.compileCommandsDir": "${workspaceFolder}\\_build\\multilink_wbz451\\wbz451",
+    "mplab.clangd.path": "c:\\Program Files\\Microchip\\xc32\\v5.10\\bin\\xc32-clangd.exe",
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "memory-inspector.debugTypes": [
+        "arm-debugger",
+        "embedded-debug",
+        "gdb",
+        "mplab-core-da"
+    ],
+    "cmake.sourceDirectory": "C:/Users/X44455/Downloads/wireless_apps_ble-master/wireless_apps_ble-master/apps/multilink/cmake/multilink_wbz451/wbz451"
+}

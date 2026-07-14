@@ -1,0 +1,403 @@
+configVersion: 1.0.0
+componentName: lib_wolfcrypt
+coreVersion: 5.9.0
+device: WBZ451
+library: []
+dependency:
+- dependencyPackage: class com.microchip.mcc.harmony.HarmonyModule
+  name: lib_wolfcrypt
+  type: module
+  version: ''
+- dependencyPackage: ''
+  name: CMSIS_5
+  type: package
+  version: 5.9.0
+- dependencyPackage: ''
+  name: FreeRTOS-Kernel
+  type: package
+  version: V11.1.0
+- dependencyPackage: ''
+  name: core
+  type: package
+  version: v3.15.0
+- dependencyPackage: ''
+  name: crypto
+  type: package
+  version: v3.8.2
+- dependencyPackage: ''
+  name: csp
+  type: package
+  version: v3.22.0
+- dependencyPackage: ''
+  name: shd
+  type: package
+  version: v1.1.0
+- dependencyPackage: ''
+  name: wireless_ble
+  type: package
+  version: v1.4.0
+- dependencyPackage: ''
+  name: wireless_pic32cxbz_wbz
+  type: package
+  version: v1.5.0
+- dependencyPackage: ''
+  name: wireless_services
+  type: package
+  version: v2.0.0-E1
+- dependencyPackage: ''
+  name: wolfssl
+  type: package
+  version: v5.4.0
+customDataClassName: com.microchip.utils_mh3.utils.persistence.CustomModuleData
+data:
+  attachments: {}
+  elementPosition:
+    attributes:
+      id: __ROOTVIEW
+    children:
+    - children:
+      - attributes:
+          id: lib_wolfcrypt
+          x: '980'
+          y: '20'
+        type: ElementPosition
+      type: ElementPositions
+    type: ComponentGraph
+  symbols:
+    cryptoCrya_03710:
+      attributes:
+        id: cryptoCrya_03710
+        label: cryptoCrya_03710
+      children:
+      - children:
+        - attributes:
+            id: lib_wolfcrypt
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    cryptoCrya_U2803:
+      attributes:
+        id: cryptoCrya_U2803
+        label: cryptoCrya_U2803
+      children:
+      - children:
+        - attributes:
+            id: lib_wolfcrypt
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    cryptoCrya_U2805:
+      attributes:
+        id: cryptoCrya_U2805
+        label: cryptoCrya_U2805
+      children:
+      - children:
+        - attributes:
+            id: lib_wolfcrypt
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes:
+      attributes:
+        id: wolfcrypt_aes
+        label: Support AES?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_128:
+      attributes:
+        id: wolfcrypt_aes_128
+        label: Support 128-bit AES?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_192:
+      attributes:
+        id: wolfcrypt_aes_192
+        label: Support 192-bit AES?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_256:
+      attributes:
+        id: wolfcrypt_aes_256
+        label: Support 256-bit AES?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_cbc:
+      attributes:
+        id: wolfcrypt_aes_cbc
+        label: Support CBC Mode?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_cbc_hw:
+      attributes:
+        id: wolfcrypt_aes_cbc_hw
+        label: Support Hardware Acceleration?
+      children:
+      - children:
+        - attributes:
+            id: visible
+          children:
+          - type: Value
+            value: 'true'
+          type: Boolean
+        type: Attributes
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_ccm:
+      attributes:
+        id: wolfcrypt_aes_ccm
+        label: Support CCM Mode?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_ctr:
+      attributes:
+        id: wolfcrypt_aes_ctr
+        label: Support Counter Mode?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_ecb:
+      attributes:
+        id: wolfcrypt_aes_ecb
+        label: Support ECB Mode?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_ecb_hw:
+      attributes:
+        id: wolfcrypt_aes_ecb_hw
+        label: Support Hardware Acceleration?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_gcm:
+      attributes:
+        id: wolfcrypt_aes_gcm
+        label: Support GCM Mode?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_hw:
+      attributes:
+        id: wolfcrypt_aes_hw
+        label: Support Hardware Acceleration?
+      children:
+      - children:
+        - attributes:
+            id: visible
+          children:
+          - type: Value
+            value: 'true'
+          type: Boolean
+        type: Attributes
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_aes_ofb:
+      attributes:
+        id: wolfcrypt_aes_ofb
+        label: Support OFB Mode?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_asn1:
+      attributes:
+        id: wolfcrypt_asn1
+        label: Support ASN.1?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_ecc:
+      attributes:
+        id: wolfcrypt_ecc
+        label: ECC Support?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_hmac:
+      attributes:
+        id: wolfcrypt_hmac
+        label: Support HMAC?
+      children:
+      - children:
+        - attributes:
+            id: visible
+          children:
+          - type: Value
+            value: 'true'
+          type: Boolean
+        type: Attributes
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_hw:
+      attributes:
+        id: wolfcrypt_hw
+        label: Enable Hardware Cryptography?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_md5:
+      attributes:
+        id: wolfcrypt_md5
+        label: Support MD5?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_oaep:
+      attributes:
+        id: wolfcrypt_oaep
+        label: Support OAEP?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_rsa:
+      attributes:
+        id: wolfcrypt_rsa
+        label: Support RSA?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_sha1:
+      attributes:
+        id: wolfcrypt_sha1
+        label: Support SHA1?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_sha256:
+      attributes:
+        id: wolfcrypt_sha256
+        label: Support SHA-2 256?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    wolfcrypt_tdes:
+      attributes:
+        id: wolfcrypt_tdes
+        label: Support T/DES?
+      children:
+      - children:
+        - attributes:
+            id: BLE_STACK_LIB
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+  userData: {}

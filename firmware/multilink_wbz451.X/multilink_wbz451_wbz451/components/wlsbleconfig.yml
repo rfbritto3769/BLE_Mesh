@@ -1,0 +1,293 @@
+configVersion: 1.0.0
+componentName: wlsbleconfig
+coreVersion: 5.9.0
+device: WBZ451
+library: []
+dependency:
+- dependencyPackage: class com.microchip.mcc.harmony.HarmonyModule
+  name: wlsbleconfig
+  type: module
+  version: ''
+- dependencyPackage: ''
+  name: CMSIS_5
+  type: package
+  version: 5.9.0
+- dependencyPackage: ''
+  name: FreeRTOS-Kernel
+  type: package
+  version: V11.1.0
+- dependencyPackage: ''
+  name: core
+  type: package
+  version: v3.15.0
+- dependencyPackage: ''
+  name: crypto
+  type: package
+  version: v3.8.2
+- dependencyPackage: ''
+  name: csp
+  type: package
+  version: v3.22.0
+- dependencyPackage: ''
+  name: shd
+  type: package
+  version: v1.1.0
+- dependencyPackage: ''
+  name: wireless_ble
+  type: package
+  version: v1.4.0
+- dependencyPackage: ''
+  name: wireless_pic32cxbz_wbz
+  type: package
+  version: v1.5.0
+- dependencyPackage: ''
+  name: wireless_services
+  type: package
+  version: v2.0.0-E1
+- dependencyPackage: ''
+  name: wolfssl
+  type: package
+  version: v5.4.0
+customDataClassName: com.microchip.utils_mh3.utils.persistence.CustomModuleData
+data:
+  attachments: {}
+  elementPosition:
+    attributes:
+      id: __ROOTVIEW
+    children:
+    - children:
+      - attributes:
+          id: wlsbleconfig
+          x: '250'
+          y: '140'
+        type: ElementPosition
+      type: ElementPositions
+    type: ComponentGraph
+  symbols:
+    WLS_BLE_BOOL_GAP_EXT_ADV:
+      attributes:
+        id: WLS_BLE_BOOL_GAP_EXT_ADV
+        label: wls Enable gap ext advertisement
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_BOOL_GAP_EXT_SCAN:
+      attributes:
+        id: WLS_BLE_BOOL_GAP_EXT_SCAN
+        label: wls ble ext scan enable
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_BOOL_L2CAP_CREDIT_FLOWCTRL:
+      attributes:
+        id: WLS_BLE_BOOL_L2CAP_CREDIT_FLOWCTRL
+        label: wls ble l2cap credit flowctrl
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_CONFIG_BOARD:
+      attributes:
+        id: WLS_BLE_CONFIG_BOARD
+        label: Select the target board
+      children:
+      - children:
+        - attributes:
+            value: WBZ451-CURIOSITY
+          type: User
+        type: Values
+      type: Combo
+    WLS_BLE_GAP_ADVERTISING:
+      attributes:
+        id: WLS_BLE_GAP_ADVERTISING
+        label: wls Enable gap advertisement
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_GAP_ADV_DATA_UDD:
+      attributes:
+        id: WLS_BLE_GAP_ADV_DATA_UDD
+        label: wls ble User Defined Data
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: '00'
+          type: Dynamic
+        type: Values
+      type: String
+    WLS_BLE_GAP_ADV_TYPE:
+      attributes:
+        id: WLS_BLE_GAP_ADV_TYPE
+        label: wls ble gap adv type
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: '0'
+          type: Dynamic
+        type: Values
+      type: Integer
+    WLS_BLE_GAP_CENTRAL:
+      attributes:
+        id: WLS_BLE_GAP_CENTRAL
+        label: wls Central
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_GAP_DSADV_EN:
+      attributes:
+        id: WLS_BLE_GAP_DSADV_EN
+        label: wls Enable deep sleep
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_GAP_EXT_ADV_ADV_SET_2:
+      attributes:
+        id: WLS_BLE_GAP_EXT_ADV_ADV_SET_2
+        label: wls ble ext adv set 2
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_GAP_EXT_SCAN_PHY:
+      attributes:
+        id: WLS_BLE_GAP_EXT_SCAN_PHY
+        label: wls Enable ext scan phy
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: '0'
+          type: Dynamic
+        type: Values
+      type: String
+    WLS_BLE_GAP_PERIPHERAL:
+      attributes:
+        id: WLS_BLE_GAP_PERIPHERAL
+        label: wls Peripheral
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_GAP_PRI_ADV_PHY:
+      attributes:
+        id: WLS_BLE_GAP_PRI_ADV_PHY
+        label: wls pri adv phy
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: '0'
+          type: Dynamic
+        type: Values
+      type: String
+    WLS_BLE_GAP_SCAN:
+      attributes:
+        id: WLS_BLE_GAP_SCAN
+        label: wls Scan
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_GAP_SEC_ADV_PHY:
+      attributes:
+        id: WLS_BLE_GAP_SEC_ADV_PHY
+        label: wls sec adv phy
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: '0'
+          type: Dynamic
+        type: Values
+      type: String
+    WLS_BLE_GAP_SVC_PERI_PRE_CP:
+      attributes:
+        id: WLS_BLE_GAP_SVC_PERI_PRE_CP
+        label: wls ble gap svc peri pre cp
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_TRSP_CLIENT:
+      attributes:
+        id: WLS_BLE_TRSP_CLIENT
+        label: wls Enable Client Role for trsp
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'true'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    WLS_BLE_TRSP_SERVER:
+      attributes:
+        id: WLS_BLE_TRSP_SERVER
+        label: wls Enable Server Role for trsp
+      children:
+      - children:
+        - attributes:
+            id: wlsbleconfig
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    numberoflinks:
+      attributes:
+        id: numberoflinks
+        label: Number of links
+      children:
+      - children:
+        - attributes:
+            value: '3'
+          type: User
+        type: Values
+      type: Integer
+  userData: {}
