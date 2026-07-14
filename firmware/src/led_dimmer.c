@@ -3,58 +3,61 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#define LED_PWM_R_CHANNEL    TCC1_CHANNEL0  /* PB0 -> TCC1/WO0 */
-#define LED_PWM_G_CHANNEL    TCC1_CHANNEL1  /* PB3 -> TCC1/WO1 */
-#define LED_PWM_B_CHANNEL    TCC1_CHANNEL2  /* PB5 -> TCC1/WO2 */
+#define LED_R_PIN    GPIO_PIN_RB0
+#define LED_G_PIN    GPIO_PIN_RB3
+#define LED_B_PIN    GPIO_PIN_RB5
 
-static volatile uint8_t s_dutyR = 0;
-static volatile uint8_t s_dutyG = 0;
-static volatile uint8_t s_dutyB = 0;
+static volatile uint8_t s_stateR = 0;
+static volatile uint8_t s_stateG = 0;
+static volatile uint8_t s_stateB = 0;
 static volatile bool s_identifying = false;
 
-static uint32_t LED_PWM_DutyFromPercent(uint8_t percent)
+static void LED_GPIO_SetRGB(uint8_t r, uint8_t g, uint8_t b)
 {
-    uint32_t periodCounts = TCC1_PWM24bitPeriodGet() + 1U;
+    if (r)
+        GPIO_PinSet(LED_R_PIN);
+    else
+        GPIO_PinClear(LED_R_PIN);
 
-    return (periodCounts * percent) / 100U;
-}
+    if (g)
+        GPIO_PinSet(LED_G_PIN);
+    else
+        GPIO_PinClear(LED_G_PIN);
 
-static void LED_PWM_SetRGB(uint8_t r_pct, uint8_t g_pct, uint8_t b_pct)
-{
-    (void)TCC1_PWM24bitDutySet(LED_PWM_R_CHANNEL, LED_PWM_DutyFromPercent(r_pct));
-    (void)TCC1_PWM24bitDutySet(LED_PWM_G_CHANNEL, LED_PWM_DutyFromPercent(g_pct));
-    (void)TCC1_PWM24bitDutySet(LED_PWM_B_CHANNEL, LED_PWM_DutyFromPercent(b_pct));
-    TCC1_PWMForceUpdate();
+    if (b)
+        GPIO_PinSet(LED_B_PIN);
+    else
+        GPIO_PinClear(LED_B_PIN);
 }
 
 void LED_Dimmer_Init(void)
 {
-    LED_PWM_SetRGB(0U, 0U, 0U);
-    TCC1_PWMStart();
+    GPIO_PinOutputEnable(LED_R_PIN);
+    GPIO_PinOutputEnable(LED_G_PIN);
+    GPIO_PinOutputEnable(LED_B_PIN);
 
-    LED_PWM_SetRGB(100U, 100U, 100U);
+    LED_GPIO_SetRGB(0, 0, 0);
+
+    LED_GPIO_SetRGB(1, 1, 1);
     vTaskDelay(pdMS_TO_TICKS(300));
-    LED_PWM_SetRGB(0U, 0U, 0U);
+    LED_GPIO_SetRGB(0, 0, 0);
 }
 
 void LED_Dimmer_SetRGB(uint8_t r_pct, uint8_t g_pct, uint8_t b_pct)
 {
-    if (r_pct > 100) r_pct = 100;
-    if (g_pct > 100) g_pct = 100;
-    if (b_pct > 100) b_pct = 100;
-    s_dutyR = r_pct;
-    s_dutyG = g_pct;
-    s_dutyB = b_pct;
+    s_stateR = (r_pct > 0) ? 1 : 0;
+    s_stateG = (g_pct > 0) ? 1 : 0;
+    s_stateB = (b_pct > 0) ? 1 : 0;
 
     if (!s_identifying)
-        LED_PWM_SetRGB(r_pct, g_pct, b_pct);
+        LED_GPIO_SetRGB(s_stateR, s_stateG, s_stateB);
 }
 
 void LED_Dimmer_GetRGB(uint8_t *r_pct, uint8_t *g_pct, uint8_t *b_pct)
 {
-    if (r_pct) *r_pct = s_dutyR;
-    if (g_pct) *g_pct = s_dutyG;
-    if (b_pct) *b_pct = s_dutyB;
+    if (r_pct) *r_pct = s_stateR ? 100 : 0;
+    if (g_pct) *g_pct = s_stateG ? 100 : 0;
+    if (b_pct) *b_pct = s_stateB ? 100 : 0;
 }
 
 void LED_Dimmer_Identify(void)
@@ -63,12 +66,12 @@ void LED_Dimmer_Identify(void)
 
     for (uint8_t i = 0; i < 10; i++)
     {
-        LED_PWM_SetRGB(100U, 100U, 100U);
+        LED_GPIO_SetRGB(1, 1, 1);
         vTaskDelay(pdMS_TO_TICKS(150));
-        LED_PWM_SetRGB(0U, 0U, 0U);
+        LED_GPIO_SetRGB(0, 0, 0);
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
     s_identifying = false;
-    LED_PWM_SetRGB(s_dutyR, s_dutyG, s_dutyB);
+    LED_GPIO_SetRGB(s_stateR, s_stateG, s_stateB);
 }
