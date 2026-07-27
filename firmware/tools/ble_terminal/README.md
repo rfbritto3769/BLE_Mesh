@@ -69,6 +69,24 @@ commands.
   persist across restarts. A button whose hex is invalid is shown disabled and
   labelled `(bad hex)`.
 
+### Bulk command set (`gen_macros.py`)
+
+`gen_macros.py` regenerates `macros.txt` with a full set of buttons:
+
+- **Quick provisioning** — assign the connected board as Node 1..100
+  (`00 00 00 05 05 <id>`), plus Unprovision.
+- **Broadcast (ALL)** and **Cluster 0..9** LED at 100% / 50% / 0%.
+- **Per-node LED** for Node 1..100 at 100% / 50% / 0%.
+
+```bash
+python gen_macros.py    # overwrites macros.txt (434 buttons)
+```
+
+Brightness maps to **white** (R=G=B: `0x00` / `0x32` / `0x64`). To emit a single
+color instead, set `COLOR` at the top of `gen_macros.py` (e.g. `(1, 0, 0)` for
+red) and re-run. Note: the in-app **Restore defaults** reverts to the small
+curated set — re-run `gen_macros.py` to rebuild the full list.
+
 ## LED state gauge
 
 The **LED state** panel (top-right) shows the last color you commanded: a color
