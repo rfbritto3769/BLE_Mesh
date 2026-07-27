@@ -1,0 +1,20 @@
+-- Provisioning (DST=0x00 -> directly connected board) --
+Assign Node 1  (Gateway cluster 0) | 00 00 00 05 05 01
+Assign Node 2  (Local cluster 0)   | 00 00 00 05 05 02
+Assign Node 5  (Local cluster 0)   | 00 00 00 05 05 05
+Assign Node 11 (Gateway cluster 1) | 00 00 00 05 05 0B
+Assign Node 20 (Local cluster 1)   | 00 00 00 05 05 14
+Assign Node 99 (Local cluster 9)   | 00 00 00 05 05 63
+Unprovision (erase ID, revert)     | 00 00 00 05 06
+
+-- LED control --
+Node 2  -> 100% Red    | 02 00 00 05 01 64 00 00
+Node 15 -> 50% Green   | 0F 00 00 05 01 00 32 00
+ALL -> 100% Red        | FF 00 00 05 01 64 00 00
+ALL -> White 50%       | FF 00 00 05 01 32 32 32
+ALL -> OFF             | FF 00 00 05 01 00 00 00
+Cluster 0 -> 100% Red  | C0 00 00 05 01 64 00 00
+Cluster 1 -> 50% Green | C1 00 00 05 01 00 32 00
+Cluster 9 -> OFF       | C9 00 00 05 01 00 00 00
+Identify Node 25       | 19 00 00 05 04
+Broadcast identify     | FF 00 00 05 04
