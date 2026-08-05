@@ -43,6 +43,7 @@
  *******************************************************************************/
 
 #include "app.h"
+#include "definitions.h"
 #include "osal/osal_freertos_extend.h"
 #include "app_ble.h"
 #include "app_ble_handler.h"
@@ -130,7 +131,14 @@ static void APP_BleStackCb(STACK_Event_T *p_stack)
     ((STACK_Event_T *)appMsg.msgData)->p_event=stackEvent.p_event;
 
     p_appMsg = &appMsg;
-    OSAL_QUEUE_Send(&appData.appQueue, p_appMsg, 0);
+    /* A dropped event leaks its payload and, for RECEIVE_DATA, also leaks a
+       CBFC credit because the app never dequeues the packet. Free the payload
+       at least, and make the loss visible. */
+    if (OSAL_QUEUE_Send(&appData.appQueue, p_appMsg, 0) != OSAL_RESULT_TRUE)
+    {
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "App queue FULL, event dropped\r\n");
+        OSAL_Free(stackEvent.p_event);
+    }
 }
 
 void APP_BleStackEvtHandler(STACK_Event_T *p_stackEvt)
@@ -235,8 +243,12 @@ static void APP_BleConfigBasic(void)
     BLE_GAP_SetAdvTxPowerLevel(CONFIG_BLE_GAP_ADV_TX_PWR, &advTxPower);
 
     (void)memset(&advParam, 0, sizeof(BLE_GAP_AdvParams_T));
-    advParam.intervalMin = 160;
-    advParam.intervalMax = 320;
+    /* 200-400 ms. A mesh node advertises permanently while also holding up to
+       six links, so a 100 ms advertising interval is radio time taken away
+       from connection events for no discovery benefit: peers scan 20 ms every
+       100 ms for six seconds and still see this node many times over. */
+    advParam.intervalMin = 320;
+    advParam.intervalMax = 640;
     advParam.type = CONFIG_BLE_GAP_ADV_TYPE;
     advParam.advChannelMap = CONFIG_BLE_GAP_ADV_CHANNEL_MAP;
     advParam.filterPolicy = CONFIG_BLE_GAP_ADV_FILT_POLICY;

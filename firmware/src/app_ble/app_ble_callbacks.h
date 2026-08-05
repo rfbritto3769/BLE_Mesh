@@ -56,8 +56,11 @@ extern "C" {
 
 /**************************************************************************************/     
 /****generated sample application code****/
-#define APP_BLE_CREATE_CONN_SCAN_INTERVAL           0x3C
-#define APP_BLE_CREATE_CONN_SCAN_WINDOW             0x1E
+/* Initiator scan, 20 ms every 100 ms (20% duty). The generated default was
+   18.75 ms every 37.5 ms (50%), which starves the connection events of every
+   link this node already holds and times them out with reason 0x08. */
+#define APP_BLE_CREATE_CONN_SCAN_INTERVAL           0xA0
+#define APP_BLE_CREATE_CONN_SCAN_WINDOW             0x20
 #define APP_BLE_CREATE_CONN_INTERVAL_MIN            0x10   
 #define APP_BLE_CREATE_CONN_INTERVAL_MAX            0x10    
 #define APP_BLE_CREATE_CONN_LATENCY                 0

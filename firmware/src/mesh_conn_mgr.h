@@ -5,7 +5,15 @@
 #include <stdbool.h>
 
 #define MESH_MAX_CONNECTIONS    6
-#define MESH_MAX_CENTRAL        3
+/* Uplinks a node opens vs downlinks it offers. Because a node only ever
+   connects to lower node ids, the aggregate demand is MESH_MAX_CENTRAL*(N-1)
+   and the aggregate supply is MESH_MAX_MESH_CHILDREN*N. With 3 uplinks and 2
+   children the demand exceeds the supply and the highest node ids end up with
+   no parent at all - they see every candidate as "no free slot" and never
+   receive a broadcast. Extra uplinks buy nothing in a flood mesh anyway, and
+   fewer links per node also cuts the radio contention behind the 0x08
+   supervision timeouts. */
+#define MESH_MAX_CENTRAL        2
 #define MESH_MAX_PERIPHERAL     3
 
 /* Mesh children accepted as peripheral. One peripheral slot is kept free for
@@ -54,6 +62,7 @@ uint8_t CONN_MGR_GetCentralCount(void);
 uint8_t CONN_MGR_GetPeripheralCount(void);
 uint8_t CONN_MGR_GetActiveCount(void);
 uint8_t CONN_MGR_GetMeshPeripheralCount(void);
+uint8_t CONN_MGR_GetLocalLinkCount(void);
 void CONN_MGR_Touch(uint16_t connHandle);
 void CONN_MGR_SetRssi(uint16_t connHandle, int8_t rssi);
 bool CONN_MGR_IsConnectedToPeer(uint8_t nodeId);

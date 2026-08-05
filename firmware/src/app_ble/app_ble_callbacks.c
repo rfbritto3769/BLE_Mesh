@@ -76,6 +76,12 @@
 #define MESH_PEER_BACKOFF_STEP_MS  15000UL
 #define MESH_PEER_BACKOFF_MAX_STEP 5U
 
+/* Having no mesh link at all for this long means the discovery state itself
+   has gone stale: a peer aged out, a backoff outlived the condition that set
+   it, or a freeSlots=0 from an old redirect never got refreshed. Rebuild it
+   from scratch instead of requiring a manual reset of the node. */
+#define MESH_ISOLATION_HEAL_TICKS  pdMS_TO_TICKS(60000)
+
 typedef struct {
     BLE_GAP_Addr_T addr;
     uint8_t nodeId;
@@ -98,6 +104,7 @@ static bool s_scanActive = true;
 static uint32_t s_lastScanTick = 0;
 static uint32_t s_scanStartTick = 0;
 static uint32_t s_pendingSinceTick = 0;
+static uint32_t s_lastLinkedTick = 0;
 static bool s_repairRequested = false;
 
 static bool mesh_SameAddress(const BLE_GAP_Addr_T *a, const BLE_GAP_Addr_T *b)
@@ -218,17 +225,36 @@ void APP_BLE_ConnectNextPeer(void)
         DiscoveredPeer_T *peer = &s_discovered[s_connectIndex];
         s_connectIndex++;
 
+        /* Each candidate is evaluated once per scan pass, so logging the
+           rejection reason here is self-rate-limiting. Without it a node that
+           stops reconnecting gives no clue which gate is holding it back. */
         if (CONN_MGR_GetCentralCount() >= MESH_MAX_CENTRAL)
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: central full\r\n",
+                peer->nodeId);
             return;
+        }
         if ((xTaskGetTickCount() - peer->lastSeenTick) >= MESH_PEER_MAX_AGE_TICKS)
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: not seen\r\n",
+                peer->nodeId);
             continue;
+        }
         if (peer->nodeId >= MESH_GetNodeId())
             continue; /* deterministic direction prevents reciprocal links */
         if (peer->freeSlots == 0U)
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: no free slot\r\n",
+                peer->nodeId);
             continue;
+        }
         if (peer->retryAfterTick != 0U &&
             (int32_t)(xTaskGetTickCount() - peer->retryAfterTick) < 0)
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: backoff f=%d\r\n",
+                peer->nodeId, (int)peer->failures);
             continue; /* refused us recently, still on hold-off */
+        }
         if (CONN_MGR_IsConnectedToPeer(peer->nodeId))
             continue;
 
@@ -262,8 +288,17 @@ void APP_BLE_ConnectNextPeer(void)
 
 void APP_BLE_RescanHandler(void)
 {
+    static uint32_t lastAdvKickTick = 0;
     uint32_t now = xTaskGetTickCount();
-    (void)BLE_GAP_SetAdvEnable(0x01, 0x00);
+
+    /* Connect, disconnect, adv-complete and adv-timeout all re-enable
+       advertising already. This is only a safety net, so poll it slowly
+       instead of issuing an HCI command every maintenance tick. */
+    if ((now - lastAdvKickTick) >= pdMS_TO_TICKS(10000))
+    {
+        lastAdvKickTick = now;
+        (void)BLE_GAP_SetAdvEnable(0x01, 0x00);
+    }
 
     /* BLE_GAP_EVT_SCAN_TIMEOUT is the only event that releases the discovery
        gate. If it is lost or delayed the node stays a passive peripheral for
@@ -287,6 +322,23 @@ void APP_BLE_RescanHandler(void)
         (void)BLE_GAP_CreateConnectionCancel();
         mesh_BackoffPeer(s_pendingPeerNodeId);
         s_pendingPeerNodeId = 0U;
+    }
+
+    if (CONN_MGR_GetLocalLinkCount() > 0U)
+    {
+        s_lastLinkedTick = now;
+    }
+    else if ((now - s_lastLinkedTick) >= MESH_ISOLATION_HEAL_TICKS)
+    {
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Isolated %ds, resetting discovery\r\n",
+            (int)(MESH_ISOLATION_HEAL_TICKS / configTICK_RATE_HZ));
+        memset(s_discovered, 0, sizeof(s_discovered));
+        s_discoveredCount = 0U;
+        s_connectIndex = 0U;
+        s_pendingPeerNodeId = 0U;
+        s_lastLinkedTick = now;
+        s_repairRequested = true;
+        s_lastScanTick = 0U;
     }
 
     if (!s_scanActive && s_pendingPeerNodeId == 0U &&

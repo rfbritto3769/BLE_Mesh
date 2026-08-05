@@ -17,8 +17,9 @@
 
 static uint8_t s_myNodeId;
 static uint8_t s_seqNum;
-static MeshDupEntry_T s_dupCache[MESH_DUP_CACHE_SIZE];
-static uint8_t s_dupIndex;
+/* Indexed by source node id: per-source state cannot be evicted by another
+   node's traffic, which is what made the old shared FIFO collapse. */
+static MeshDupEntry_T s_dupCache[NODE_ID_MAX + 1];
 
 static uint16_t s_lastPhoneConnHandle = 0xFFFF;
 
@@ -42,6 +43,11 @@ typedef struct {
 } MeshBroadcastRetry_T;
 static MeshBroadcastRetry_T s_broadcastRetry;
 #define MESH_LINK_TX_QUEUE_SIZE 16U
+/* A link whose GATT transport never opens (peer has not enabled the CCCD)
+   fails every send with MBA_RES_BAD_STATE. Without an age limit its packets
+   stay queued for ever and starve every other link out of the shared queue,
+   which shows up as "TX queue FULL" and silently dropped mesh traffic. */
+#define MESH_LINK_TX_MAX_AGE_TICKS pdMS_TO_TICKS(5000)
 typedef struct {
     bool inUse;
     uint16_t connHandle;
@@ -49,6 +55,7 @@ typedef struct {
     uint8_t length;
     uint8_t attempts;
     uint32_t nextTick;
+    uint32_t enqueueTick;
 } MeshLinkTx_T;
 static MeshLinkTx_T s_linkTxQueue[MESH_LINK_TX_QUEUE_SIZE];
 static uint8_t s_rootId;
@@ -115,8 +122,11 @@ static void mesh_MarkTopologyDirty(void)
         (mesh_Random() % 2001UL));
 }
 
-static bool mesh_SendDirect(uint16_t connHandle, uint8_t dstId, uint8_t cmd,
-    const uint8_t *payload, uint8_t payloadLen)
+/* queueIfBusy=false sends only if the GATT transport is open right now. Use it
+   for traffic that already owns a retry policy, so a failed attempt is not
+   silently parked in the shared link queue where it may later expire. */
+static bool mesh_SendDirectEx(uint16_t connHandle, uint8_t dstId, uint8_t cmd,
+    const uint8_t *payload, uint8_t payloadLen, bool queueIfBusy)
 {
     uint8_t packet[MESH_MAX_PACKET_SIZE];
     MeshHeader_T *hdr = (MeshHeader_T *)packet;
@@ -128,7 +138,15 @@ static bool mesh_SendDirect(uint16_t connHandle, uint8_t dstId, uint8_t cmd,
     hdr->ttl = 1U;
     hdr->cmd = cmd;
     if (payloadLen) memcpy(packet + MESH_HEADER_SIZE, payload, payloadLen);
-    return mesh_SendToConn(conn, packet, MESH_HEADER_SIZE + payloadLen);
+    if (queueIfBusy)
+        return mesh_SendToConn(conn, packet, MESH_HEADER_SIZE + payloadLen);
+    return mesh_TrySendToConn(conn, packet, MESH_HEADER_SIZE + payloadLen);
+}
+
+static bool mesh_SendDirect(uint16_t connHandle, uint8_t dstId, uint8_t cmd,
+    const uint8_t *payload, uint8_t payloadLen)
+{
+    return mesh_SendDirectEx(connHandle, dstId, cmd, payload, payloadLen, true);
 }
 
 static MeshConn_T *mesh_FindParentConnection(void)
@@ -178,29 +196,70 @@ static bool mesh_IsMyCluster(uint8_t dstId)
            ((dstId - MESH_CLUSTER_ADDR_BASE) == GET_CLUSTER(s_myNodeId));
 }
 
+/* Sequence numbers are 8 bit and wrap, so ordering is a signed difference.
+   Returns NULL for a source id that cannot exist. */
+static MeshDupEntry_T *mesh_DupEntry(uint8_t srcId)
+{
+    if (srcId < NODE_ID_MIN || srcId > NODE_ID_MAX) return NULL;
+    return &s_dupCache[srcId];
+}
+
 static bool mesh_IsDuplicate(uint8_t srcId, uint8_t seqNum)
 {
-    uint8_t i;
-    uint32_t now = xTaskGetTickCount();
-    for (i = 0; i < MESH_DUP_CACHE_SIZE; i++)
-    {
-        if (s_dupCache[i].src_id == srcId && s_dupCache[i].seq_num == seqNum)
-        {
-            if ((now - s_dupCache[i].tickStamp) < MESH_DUP_MAX_AGE_TICKS)
-                return true;
-            s_dupCache[i].src_id = 0;
-            return false;
-        }
-    }
-    return false;
+    MeshDupEntry_T *e = mesh_DupEntry(srcId);
+    int8_t diff;
+
+    if (e == NULL || !e->valid) return false;
+    /* A source that has been silent long enough may have rebooted and
+       restarted its counter, so its history is no longer meaningful. */
+    if ((xTaskGetTickCount() - e->tickStamp) >= MESH_DUP_MAX_AGE_TICKS)
+        return false;
+
+    diff = (int8_t)(seqNum - e->lastSeq);
+    if (diff > 0) return false;                          /* newer than anything seen */
+    if (diff <= -(int8_t)MESH_DUP_WINDOW) return false;  /* older than the window */
+    return (e->window & (1UL << (uint8_t)(-diff))) != 0U;
 }
 
 static void mesh_AddToDupCache(uint8_t srcId, uint8_t seqNum)
 {
-    s_dupCache[s_dupIndex].src_id = srcId;
-    s_dupCache[s_dupIndex].seq_num = seqNum;
-    s_dupCache[s_dupIndex].tickStamp = xTaskGetTickCount();
-    s_dupIndex = (s_dupIndex + 1) % MESH_DUP_CACHE_SIZE;
+    MeshDupEntry_T *e = mesh_DupEntry(srcId);
+    uint32_t now = xTaskGetTickCount();
+    int8_t diff;
+
+    if (e == NULL) return;
+
+    if (!e->valid || (now - e->tickStamp) >= MESH_DUP_MAX_AGE_TICKS)
+    {
+        e->valid = true;
+        e->lastSeq = seqNum;
+        e->window = 1UL;      /* bit 0 tracks lastSeq itself */
+        e->tickStamp = now;
+        return;
+    }
+
+    diff = (int8_t)(seqNum - e->lastSeq);
+    if (diff > 0)
+    {
+        e->window = (diff >= (int8_t)MESH_DUP_WINDOW) ?
+            1UL : ((e->window << (uint8_t)diff) | 1UL);
+        e->lastSeq = seqNum;
+    }
+    else if (diff > -(int8_t)MESH_DUP_WINDOW)
+    {
+        e->window |= (1UL << (uint8_t)(-diff));
+    }
+    else
+    {
+        /* Further than the window in either direction. An 8 bit counter cannot
+           tell a big jump forward from an equally big step back, and either
+           way the stored history no longer orders against this packet, so
+           resync onto it. Without this the entry stays pinned to a stale
+           lastSeq and stops detecting duplicates altogether. */
+        e->window = 1UL;
+        e->lastSeq = seqNum;
+    }
+    e->tickStamp = now;
 }
 
 static bool mesh_SendToConn(MeshConn_T *conn, uint8_t *p_packet, uint16_t packetLen)
@@ -220,6 +279,7 @@ static bool mesh_SendToConn(MeshConn_T *conn, uint8_t *p_packet, uint16_t packet
             memcpy(s_linkTxQueue[i].packet, p_packet, packetLen);
             s_linkTxQueue[i].length = (uint8_t)packetLen;
             s_linkTxQueue[i].attempts = 0U;
+            s_linkTxQueue[i].enqueueTick = xTaskGetTickCount();
             s_linkTxQueue[i].nextTick = xTaskGetTickCount() + pdMS_TO_TICKS(100);
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TX queued hdl=0x%04X cmd=0x%02X\r\n",
                 conn->connHandle, p_packet[4]);
@@ -368,11 +428,19 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
             if (payloadLen >= 3U)
             {
                 uint8_t reply[3];
+                MeshConn_T *joiner = CONN_MGR_GetByHandle(connHandle);
+                bool alreadyAdmitted = (joiner != NULL) && joiner->topologyReady;
                 CONN_MGR_SetPeerNodeId(connHandle, payload[0]);
                 CONN_MGR_SetType(connHandle, CONN_TYPE_LOCAL);
                 CONN_MGR_SetReady(connHandle);
-                /* SetType(LOCAL) above already counts this connection. */
-                if (CONN_MGR_GetMeshPeripheralCount() > MESH_MAX_MESH_CHILDREN)
+                /* Admission is decided once. A repeated JOIN on a child that
+                   is already in the tree (its JOIN_ACCEPT was lost, or its
+                   stack re-raised the event) must not be re-evaluated: by then
+                   this node may be full, and the answer would be a redirect
+                   that disconnects a healthy, established link.
+                   SetType(LOCAL) above already counts this connection. */
+                if (!alreadyAdmitted &&
+                    CONN_MGR_GetMeshPeripheralCount() > MESH_MAX_MESH_CHILDREN)
                 {
                     uint8_t redirect[2] = { s_rootId, s_parentId };
                     mesh_SendDirect(connHandle, payload[0], MESH_CMD_JOIN_REDIRECT,
@@ -544,7 +612,6 @@ void MESH_Init(uint8_t myNodeId)
 {
     s_myNodeId = myNodeId;
     s_seqNum = 0;
-    s_dupIndex = 0;
     memset(s_dupCache, 0, sizeof(s_dupCache));
     memset(s_pendingTx, 0, sizeof(s_pendingTx));
     memset(&s_broadcastRetry, 0, sizeof(s_broadcastRetry));
@@ -712,8 +779,16 @@ void MESH_Maintenance(void)
         {
             MeshHeader_T *queuedHdr;
             MeshConn_T *queuedConn;
-            if (!s_linkTxQueue[i].inUse ||
-                (int32_t)(now - s_linkTxQueue[i].nextTick) < 0)
+            if (!s_linkTxQueue[i].inUse)
+                continue;
+            if ((now - s_linkTxQueue[i].enqueueTick) >= MESH_LINK_TX_MAX_AGE_TICKS)
+            {
+                SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TX expired hdl=0x%04X cmd=0x%02X\r\n",
+                    s_linkTxQueue[i].connHandle, s_linkTxQueue[i].packet[4]);
+                s_linkTxQueue[i].inUse = false;
+                continue;
+            }
+            if ((int32_t)(now - s_linkTxQueue[i].nextTick) < 0)
                 continue;
             queuedHdr = (MeshHeader_T *)s_linkTxQueue[i].packet;
             if ((pass == 0U) != (queuedHdr->cmd == MESH_CMD_SET_DIMMER))
@@ -753,13 +828,15 @@ void MESH_Maintenance(void)
             s_broadcastRetry.nextTick = now + pdMS_TO_TICKS(800);
     }
 
-    /* GATT discovery and CCC configuration can finish before the peer is able
-       to consume the first JOIN. Repeat it with bounded exponential spacing
-       until JOIN_ACCEPT confirms that routing is available in both directions. */
+    /* The CBFC downlink handshake takes several ATT round trips after GATT
+       discovery ends, and can fail outright. Retry the JOIN with bounded
+       exponential spacing: the first write the transport accepts is what
+       marks this link ready and usable for forwarding. Deliberately does not
+       require isReady, because that is the flag this loop establishes. */
     for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
     {
         uint32_t joinDelay;
-        if (!links[i].inUse || !links[i].isReady || links[i].topologyReady ||
+        if (!links[i].inUse || links[i].topologyReady ||
             links[i].role != CONN_ROLE_CENTRAL || links[i].type != CONN_TYPE_LOCAL)
             continue;
         joinDelay = pdMS_TO_TICKS(1000UL <<
@@ -911,11 +988,19 @@ void MESH_SendHello(uint16_t connHandle)
     MeshConn_T *conn = CONN_MGR_GetByHandle(connHandle);
     uint8_t join[3] = { s_myNodeId, s_rootId, s_depth };
     if (conn == NULL) return;
-    if (mesh_SendDirect(connHandle, conn->peerNodeId, MESH_CMD_JOIN_REQUEST,
-        join, sizeof(join)))
+    /* Never queue the JOIN: MESH_Maintenance already retries it with
+       exponential backoff while the link is not topologyReady. Queuing it
+       would let it expire silently after marking the link joined. */
+    if (mesh_SendDirectEx(connHandle, conn->peerNodeId, MESH_CMD_JOIN_REQUEST,
+        join, sizeof(join), false))
     {
-        /* A successful write queues JOIN_REQUEST on the established GATT
-           link. Do not block data routing while JOIN_ACCEPT competes for a
+        /* A write that the GATT layer accepted is the only proof that the
+           central->peripheral direction is actually open. BLE_TRSPC reports
+           EVT_DISC_COMPLETE before it even starts the CBFC handshake, so
+           trusting that event marks one-way links as usable and silently
+           drops every packet forwarded into them. */
+        CONN_MGR_SetReady(connHandle);
+        /* Do not block data routing while JOIN_ACCEPT competes for a
            notification buffer inside the peer receive callback. */
         CONN_MGR_SetTopologyReady(connHandle);
         if (s_parentId == 0U && conn->peerNodeId != 0U &&
@@ -933,6 +1018,16 @@ void MESH_SendHello(uint16_t connHandle)
 void MESH_OnLinkLost(uint8_t peerNodeId)
 {
     uint8_t i;
+    /* 0 means "peer id unknown": the phone, or a link whose JOIN never
+       completed. s_parentId is also 0 when this node has no parent, so
+       without this guard every such disconnect is mistaken for the loss of
+       the parent, wiping the topology and flooding a mesh-wide
+       REPAIR_REQUEST that nothing acts on. */
+    if (peerNodeId == 0U)
+    {
+        mesh_MarkTopologyDirty();
+        return;
+    }
     for (i = 0U; i < MESH_CHILD_SUMMARY_SIZE; i++)
         if (s_childSummary[i].nodeId == peerNodeId)
             memset(&s_childSummary[i], 0, sizeof(s_childSummary[i]));

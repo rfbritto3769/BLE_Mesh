@@ -3,7 +3,13 @@
     "allow": [
       "mcp__mplab-docs__get_example_projects",
       "mcp__mplab-docs__search_evk_user_guide",
-      "Bash(ninja)"
+      "Bash(ninja)",
+      "Bash(cd /c/Users/X44455 && diff -u \"MPLABProjects/BLE_MESH_BZ6/src/mesh_conn_mgr.h\" \"Documents/BLE_Mesh/BLE_Mesh/firmware/src/mesh_conn_mgr.h\")",
+      "Bash(awk '/@brief Set advertising data/,/BLE_GAP_SetAdvData\\\\\\(/' firmware/src/config/wbz451/ble/lib/include/ble_gap.h)",
+      "Bash(awk '/@brief Start or stop advertising/,/BLE_GAP_SetAdvEnable\\\\\\(/' firmware/src/config/wbz451/ble/lib/include/ble_gap.h)",
+      "Bash(awk '/@brief Send.*data.*to the connected/,/BLE_TRSPS_SendData\\\\\\(/' firmware/src/config/wbz451/ble/lib/include/ble_trsps.h)",
+      "Bash(awk '/BLE_TRSPS_SendData/{print NR\": \"$0}' firmware/src/config/wbz451/ble/profile_ble/ble_trsps/ble_trsps.h)",
+      "Bash(sed -n '/Send characteristic value to the connected device/,/uint16_t BLE_TRSPS_SendData/p' firmware/src/config/wbz451/ble/profile_ble/ble_trsps/ble_trsps.h)"
     ]
   }
 }

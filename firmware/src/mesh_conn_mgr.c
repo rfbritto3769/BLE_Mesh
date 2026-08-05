@@ -42,17 +42,26 @@ bool CONN_MGR_AddConnection(uint16_t connHandle, ConnRole_T role)
     return false;
 }
 
+/* Clears every entry carrying this handle. Stopping at the first match would
+   leak a slot for good if the table ever ended up with a duplicate, and a
+   leaked slot silently blocks all further connections. */
 void CONN_MGR_RemoveConnection(uint16_t connHandle)
 {
     uint8_t i;
     for (i = 0; i < MESH_MAX_CONNECTIONS; i++)
     {
         if (s_connTable[i].inUse && s_connTable[i].connHandle == connHandle)
-        {
             memset(&s_connTable[i], 0, sizeof(MeshConn_T));
-            return;
-        }
     }
+}
+
+uint8_t CONN_MGR_GetLocalLinkCount(void)
+{
+    uint8_t i, count = 0;
+    for (i = 0; i < MESH_MAX_CONNECTIONS; i++)
+        if (s_connTable[i].inUse && s_connTable[i].type == CONN_TYPE_LOCAL)
+            count++;
+    return count;
 }
 
 void CONN_MGR_SetPeerNodeId(uint16_t connHandle, uint8_t nodeId)

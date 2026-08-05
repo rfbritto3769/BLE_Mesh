@@ -24,7 +24,11 @@
 #define MESH_CLUSTER_ADDR_MAX   0xC9
 #define MESH_MAX_TTL            12
 #define MESH_HEADER_SIZE        5
-#define MESH_DUP_CACHE_SIZE     32
+/* Replay window kept per source node, in packets. A single shared FIFO does
+   not work here: one chatty neighbour evicts every other source's history, so
+   the effective dedup window collapses to well under a second under load and
+   delayed copies get re-executed and re-flooded. */
+#define MESH_DUP_WINDOW         32U
 #define MESH_MAX_PACKET_SIZE    20
 
 typedef struct __attribute__((packed)) {
@@ -35,10 +39,13 @@ typedef struct __attribute__((packed)) {
     uint8_t cmd;
 } MeshHeader_T;
 
+/* Anti-replay state for one source node: the highest sequence number seen and
+   a bitmap of the MESH_DUP_WINDOW sequence numbers below it. */
 typedef struct {
-    uint8_t src_id;
-    uint8_t seq_num;
+    uint32_t window;
     uint32_t tickStamp;
+    uint8_t  lastSeq;
+    bool     valid;
 } MeshDupEntry_T;
 
 void MESH_Init(uint8_t myNodeId);
