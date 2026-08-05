@@ -3,6 +3,7 @@
 #include "osal/osal_freertos.h"
 #include "mesh_routing.h"
 #include "mesh_conn_mgr.h"
+#include "node_config.h"
 #include "led_dimmer.h"
 #include "definitions.h"
 #include "ble_gap.h"
@@ -15,6 +16,27 @@ static uint8_t hexCharToNibble(uint8_t c)
     return 0xFF;
 }
 
+static bool isHexSeparator(uint8_t c)
+{
+    return (c == ' ') || (c == '\t') || (c == '\r') || (c == '\n') ||
+           (c == ':') || (c == ',') || (c == '-');
+}
+
+static bool isAsciiHexPacket(const uint8_t *data, uint16_t len)
+{
+    uint16_t digits = 0;
+    uint16_t i;
+    for (i = 0; i < len; i++)
+    {
+        if (isHexSeparator(data[i]))
+            continue;
+        if (hexCharToNibble(data[i]) == 0xFFU)
+            return false;
+        digits++;
+    }
+    return (digits >= (MESH_HEADER_SIZE * 2U)) && ((digits & 1U) == 0U);
+}
+
 static uint16_t parseHexString(uint8_t *asciiIn, uint16_t asciiLen, uint8_t *binOut, uint16_t binMax)
 {
     uint16_t binIdx = 0;
@@ -22,7 +44,7 @@ static uint16_t parseHexString(uint8_t *asciiIn, uint16_t asciiLen, uint8_t *bin
 
     while (i < asciiLen && binIdx < binMax)
     {
-        while (i < asciiLen && (asciiIn[i] == ' ' || asciiIn[i] == '\r' || asciiIn[i] == '\n'))
+        while (i < asciiLen && isHexSeparator(asciiIn[i]))
             i++;
 
         if (i + 1 >= asciiLen) break;
@@ -63,7 +85,7 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                     params.intervalMin = 0x50;
                     params.intervalMax = 0xA0;
                     params.latency = 0;
-                    params.supervisionTimeout = 0x0190;
+                    params.supervisionTimeout = 0x0320; /* 8 s, see central side */
                     BLE_GAP_UpdateConnParam(hdl, &params);
                 }
             }
@@ -77,8 +99,7 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
             uint8_t rawBuf[64];
             uint8_t binBuf[32];
             uint16_t binLen;
-            bool isAsciiHex = false;
-            uint16_t idx;
+            bool isAsciiHex;
 
             BLE_TRSPS_GetDataLength(p_event->eventField.onReceiveData.connHandle, &dataLen);
 
@@ -87,19 +108,14 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                 result = BLE_TRSPS_GetData(p_event->eventField.onReceiveData.connHandle, rawBuf);
                 if (result == 0)
                 {
-                    for (idx = 0; idx < dataLen; idx++)
-                    {
-                        if (rawBuf[idx] == ' ')
-                        {
-                            isAsciiHex = true;
-                            break;
-                        }
-                    }
+                    isAsciiHex = isAsciiHexPacket(rawBuf, dataLen);
 
                     if (!isAsciiHex && dataLen >= 5)
                     {
                         MeshConn_T *conn = CONN_MGR_GetByHandle(p_event->eventField.onReceiveData.connHandle);
-                        if (conn && conn->type != CONN_TYPE_LOCAL)
+                        if (conn && rawBuf[1] == NODE_ID_PHONE)
+                            CONN_MGR_SetType(p_event->eventField.onReceiveData.connHandle, CONN_TYPE_PHONE);
+                        else if (conn && conn->type != CONN_TYPE_LOCAL)
                             CONN_MGR_SetType(p_event->eventField.onReceiveData.connHandle, CONN_TYPE_LOCAL);
                         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "BIN dst=%02X cmd=%02X\r\n", (int)rawBuf[0], (int)rawBuf[4]);
                         MESH_ProcessIncoming(p_event->eventField.onReceiveData.connHandle, dataLen, rawBuf);

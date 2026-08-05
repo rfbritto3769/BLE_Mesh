@@ -8,6 +8,12 @@
 #define MESH_MAX_CENTRAL        3
 #define MESH_MAX_PERIPHERAL     3
 
+/* Mesh children accepted as peripheral. One peripheral slot is kept free for
+   the phone/GUI. This is the value advertised as "free slots" and the value
+   enforced when a JOIN_REQUEST is admitted; the two must agree or peers keep
+   connecting to full nodes and being kicked straight back out. */
+#define MESH_MAX_MESH_CHILDREN  (MESH_MAX_PERIPHERAL - 1)
+
 typedef enum {
     CONN_ROLE_NONE = 0,
     CONN_ROLE_CENTRAL,
@@ -27,8 +33,13 @@ typedef struct {
     ConnType_T type;
     uint8_t peerNodeId;
     bool isReady;
+    bool topologyReady;
     bool inUse;
     uint32_t createdTick;
+    uint32_t lastActivityTick;
+    int8_t rssi;
+    uint32_t lastJoinTick;
+    uint8_t joinRetries;
 } MeshConn_T;
 
 void CONN_MGR_Init(void);
@@ -36,11 +47,15 @@ bool CONN_MGR_AddConnection(uint16_t connHandle, ConnRole_T role);
 void CONN_MGR_RemoveConnection(uint16_t connHandle);
 void CONN_MGR_SetPeerNodeId(uint16_t connHandle, uint8_t nodeId);
 void CONN_MGR_SetReady(uint16_t connHandle);
+void CONN_MGR_SetTopologyReady(uint16_t connHandle);
 void CONN_MGR_SetType(uint16_t connHandle, ConnType_T type);
 MeshConn_T* CONN_MGR_GetByHandle(uint16_t connHandle);
 uint8_t CONN_MGR_GetCentralCount(void);
 uint8_t CONN_MGR_GetPeripheralCount(void);
 uint8_t CONN_MGR_GetActiveCount(void);
+uint8_t CONN_MGR_GetMeshPeripheralCount(void);
+void CONN_MGR_Touch(uint16_t connHandle);
+void CONN_MGR_SetRssi(uint16_t connHandle, int8_t rssi);
 bool CONN_MGR_IsConnectedToPeer(uint8_t nodeId);
 MeshConn_T* CONN_MGR_GetTable(void);
 void CONN_MGR_SweepStale(uint32_t maxAgeTicks);

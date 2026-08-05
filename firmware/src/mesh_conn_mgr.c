@@ -29,8 +29,13 @@ bool CONN_MGR_AddConnection(uint16_t connHandle, ConnRole_T role)
             s_connTable[i].role = role;
             s_connTable[i].peerNodeId = 0;
             s_connTable[i].isReady = false;
+            s_connTable[i].topologyReady = false;
             s_connTable[i].inUse = true;
             s_connTable[i].createdTick = xTaskGetTickCount();
+            s_connTable[i].lastActivityTick = s_connTable[i].createdTick;
+            s_connTable[i].rssi = -127;
+            s_connTable[i].lastJoinTick = 0U;
+            s_connTable[i].joinRetries = 0U;
             return true;
         }
     }
@@ -60,6 +65,29 @@ void CONN_MGR_SetReady(uint16_t connHandle)
 {
     MeshConn_T *p = CONN_MGR_GetByHandle(connHandle);
     if (p) p->isReady = true;
+}
+
+void CONN_MGR_SetTopologyReady(uint16_t connHandle)
+{
+    MeshConn_T *p = CONN_MGR_GetByHandle(connHandle);
+    if (p)
+    {
+        p->topologyReady = true;
+        p->joinRetries = 0U;
+        p->lastActivityTick = xTaskGetTickCount();
+    }
+}
+
+void CONN_MGR_Touch(uint16_t connHandle)
+{
+    MeshConn_T *p = CONN_MGR_GetByHandle(connHandle);
+    if (p) p->lastActivityTick = xTaskGetTickCount();
+}
+
+void CONN_MGR_SetRssi(uint16_t connHandle, int8_t rssi)
+{
+    MeshConn_T *p = CONN_MGR_GetByHandle(connHandle);
+    if (p) p->rssi = rssi;
 }
 
 void CONN_MGR_SetType(uint16_t connHandle, ConnType_T type)
@@ -109,6 +137,15 @@ uint8_t CONN_MGR_GetActiveCount(void)
         if (s_connTable[i].inUse)
             count++;
     }
+    return count;
+}
+
+uint8_t CONN_MGR_GetMeshPeripheralCount(void)
+{
+    uint8_t i, count = 0;
+    for (i = 0; i < MESH_MAX_CONNECTIONS; i++)
+        if (s_connTable[i].inUse && s_connTable[i].role == CONN_ROLE_PERIPHERAL &&
+            s_connTable[i].type == CONN_TYPE_LOCAL) count++;
     return count;
 }
 

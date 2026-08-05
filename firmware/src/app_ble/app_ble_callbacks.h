@@ -87,6 +87,11 @@ void APP_WLS_BLE_PairedDeviceDisconnected(BLE_DM_Event_T *p_event);
 void APP_WLS_BLE_PairedDeviceConnected(BLE_DM_Event_T *p_event);
 void APP_BLE_RescanHandler(void);
 void APP_BLE_ConnectNextPeer(void);
+bool APP_BLE_StartScan(void);
+bool APP_BLE_IsNodeIdObserved(uint8_t nodeId);
+void APP_BLE_MarkPeerRejected(uint8_t nodeId);
+void APP_BLE_MarkPeerDisconnected(uint8_t nodeId);
+void APP_BLE_MarkPeerUnstable(uint8_t nodeId);
 
 #ifdef	__cplusplus
 }

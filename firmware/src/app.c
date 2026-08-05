@@ -67,8 +67,6 @@
 #include "led_dimmer.h"
 #include "provisioning.h"
 
-#define APP_BLE_SCAN_DURATION       10000
-
 
 
 
@@ -241,7 +239,7 @@ void APP_Tasks ( void )
 
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            BLE_GAP_SetScanningEnable(true, BLE_GAP_SCAN_FD_ENABLE, BLE_GAP_SCAN_MODE_OBSERVER, APP_BLE_SCAN_DURATION);
+            (void)APP_BLE_StartScan();
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Scanning for peers...\r\n");
 
             if (appInitialized)
@@ -253,7 +251,9 @@ void APP_Tasks ( void )
 
         case APP_STATE_SERVICE_TASKS:
         {
-            if (OSAL_QUEUE_Receive(&appData.appQueue, &appMsg, pdMS_TO_TICKS(5000)))
+            static uint32_t lastMaintenanceTick = 0;
+
+            if (OSAL_QUEUE_Receive(&appData.appQueue, &appMsg, pdMS_TO_TICKS(1000)))
             {
                 if(p_appMsg->msgId==APP_MSG_BLE_STACK_EVT)
                 {
@@ -268,10 +268,21 @@ void APP_Tasks ( void )
                     APP_BLE_RescanHandler();
                 }
             }
-            else
+
+            /* Advertising reports keep the queue busy for the whole discovery
+               window. Drive maintenance from the tick counter so scanning,
+               joining and retransmission also progress under event load. */
+            if ((xTaskGetTickCount() - lastMaintenanceTick) >= pdMS_TO_TICKS(1000))
             {
+                lastMaintenanceTick = xTaskGetTickCount();
                 APP_BLE_RescanHandler();
                 APP_BLE_ConnectNextPeer();
+                /* GATT discovery and CCC setup must finish before a link is
+                   marked ready. Under six links plus scanning that can take
+                   well over 15 s, and sweeping too early kills healthy links
+                   (and the GUI link, which is only ready once it subscribes). */
+                CONN_MGR_SweepStale(pdMS_TO_TICKS(30000));
+                MESH_Maintenance();
             }
             break;
         }

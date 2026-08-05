@@ -173,6 +173,8 @@ void APP_BleStackInitAdvance(void);
 
 */
 void APP_BleStackEvtHandler(STACK_Event_T *p_stackEvt);
+void APP_BLE_UpdateTopologyAdvertisement(uint8_t rootId, uint8_t depth,
+    uint8_t freeMeshSlots, uint8_t flags);
 
 
 //DOM-IGNORE-BEGIN

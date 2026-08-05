@@ -57,12 +57,36 @@
 #include "provisioning.h"
 #include "ble_gap.h"
 
-#define MESH_RESCAN_DURATION       10000
-#define MESH_MAX_DISCOVERED        6
+/* BLE_GAP_SetScanningEnable() takes the duration in units of 100 ms, not in
+   milliseconds. Passing a millisecond value keeps the radio scanning for tens
+   of minutes, so BLE_GAP_EVT_SCAN_TIMEOUT never arrives and the node never
+   leaves the discovery window to connect to anyone. */
+#define MESH_SCAN_DURATION_MS      6000UL
+#define MESH_SCAN_DURATION_UNITS   ((uint16_t)(MESH_SCAN_DURATION_MS / 100UL))
+#define MESH_SCAN_GUARD_TICKS      pdMS_TO_TICKS(MESH_SCAN_DURATION_MS + 3000UL)
+#define MESH_CONNECT_GUARD_TICKS   pdMS_TO_TICKS(10000)
+#define MESH_MAX_DISCOVERED        16
+#define MESH_RESCAN_PERIOD_TICKS   pdMS_TO_TICKS(30000)
+#define MESH_PEER_MAX_AGE_TICKS    pdMS_TO_TICKS(120000)
+
+/* A link that dies this fast was refused (JOIN_REDIRECT, connection table
+   full), not lost. Retrying it immediately produces a permanent
+   connect/disconnect loop, so such a peer is put on an escalating backoff. */
+#define MESH_LINK_STABLE_TICKS     pdMS_TO_TICKS(10000)
+#define MESH_PEER_BACKOFF_STEP_MS  15000UL
+#define MESH_PEER_BACKOFF_MAX_STEP 5U
 
 typedef struct {
     BLE_GAP_Addr_T addr;
     uint8_t nodeId;
+    int8_t rssi;
+    uint32_t lastSeenTick;
+    uint8_t failures;
+    uint8_t rootId;
+    uint8_t depth;
+    uint8_t freeSlots;
+    uint8_t flags;
+    uint32_t retryAfterTick;
 } DiscoveredPeer_T;
 
 static uint8_t s_pendingPeerNodeId = 0;
@@ -70,18 +94,121 @@ static bool s_initialScanDone = false;
 static DiscoveredPeer_T s_discovered[MESH_MAX_DISCOVERED];
 static uint8_t s_discoveredCount = 0;
 static uint8_t s_connectIndex = 0;
+static bool s_scanActive = true;
+static uint32_t s_lastScanTick = 0;
+static uint32_t s_scanStartTick = 0;
+static uint32_t s_pendingSinceTick = 0;
+static bool s_repairRequested = false;
 
-static void mesh_ConnectNext(void);
+static bool mesh_SameAddress(const BLE_GAP_Addr_T *a, const BLE_GAP_Addr_T *b)
+{
+    return a->addrType == b->addrType &&
+           memcmp(a->addr, b->addr, GAP_MAX_BD_ADDRESS_LEN) == 0;
+}
+
+bool APP_BLE_IsNodeIdObserved(uint8_t nodeId)
+{
+    uint8_t i;
+    uint32_t now = xTaskGetTickCount();
+    for (i = 0; i < s_discoveredCount; i++)
+        if (s_discovered[i].nodeId == nodeId &&
+            (now - s_discovered[i].lastSeenTick) < MESH_PEER_MAX_AGE_TICKS)
+            return true;
+    return false;
+}
+
+/* Escalating hold-off so a peer that refuses us is not hammered. The delay is
+   derived from the failure count, which only clears once a link to that peer
+   has actually stayed up (see APP_BLE_MarkPeerDisconnected). */
+static void mesh_BackoffPeer(uint8_t nodeId)
+{
+    uint8_t i;
+    uint32_t now = xTaskGetTickCount();
+    for (i = 0U; i < s_discoveredCount; i++)
+    {
+        if (s_discovered[i].nodeId != nodeId) continue;
+        if (s_discovered[i].failures < 0xFFU) s_discovered[i].failures++;
+        s_discovered[i].retryAfterTick = now + pdMS_TO_TICKS(
+            MESH_PEER_BACKOFF_STEP_MS *
+            ((s_discovered[i].failures < MESH_PEER_BACKOFF_MAX_STEP) ?
+                s_discovered[i].failures : MESH_PEER_BACKOFF_MAX_STEP));
+    }
+}
+
+void APP_BLE_MarkPeerRejected(uint8_t nodeId)
+{
+    uint8_t i;
+    for (i = 0U; i < s_discoveredCount; i++)
+        if (s_discovered[i].nodeId == nodeId)
+            s_discovered[i].freeSlots = 0U;
+    mesh_BackoffPeer(nodeId);
+}
+
+void APP_BLE_MarkPeerUnstable(uint8_t nodeId)
+{
+    mesh_BackoffPeer(nodeId);
+}
+
+bool APP_BLE_StartScan(void)
+{
+    if (BLE_GAP_SetScanningEnable(true, BLE_GAP_SCAN_FD_ENABLE,
+        BLE_GAP_SCAN_MODE_OBSERVER, MESH_SCAN_DURATION_UNITS) != 0U)
+        return false;
+    s_scanActive = true;
+    s_scanStartTick = xTaskGetTickCount();
+    return true;
+}
+
+/* Called only for links that were up long enough to be considered healthy.
+   Losing one of those releases a slot on both ends, so the peer becomes an
+   immediate candidate again and its trouble history is cleared. */
+void APP_BLE_MarkPeerDisconnected(uint8_t nodeId)
+{
+    uint8_t i;
+    for (i = 0U; i < s_discoveredCount; i++)
+    {
+        if (s_discovered[i].nodeId == nodeId)
+        {
+            if (s_discovered[i].freeSlots == 0U)
+                s_discovered[i].freeSlots = 1U;
+            s_discovered[i].failures = 0U;
+            s_discovered[i].retryAfterTick = 0U;
+        }
+    }
+}
+
+static void mesh_SortCandidates(void)
+{
+    uint8_t i, j;
+    for (i = 0; i + 1U < s_discoveredCount; i++)
+        for (j = i + 1U; j < s_discoveredCount; j++)
+            if ((s_discovered[j].freeSlots > 0U && s_discovered[i].freeSlots == 0U) ||
+                (s_discovered[j].freeSlots == s_discovered[i].freeSlots &&
+                 s_discovered[j].rootId < s_discovered[i].rootId) ||
+                (s_discovered[j].freeSlots == s_discovered[i].freeSlots &&
+                 s_discovered[j].rootId == s_discovered[i].rootId &&
+                 s_discovered[j].depth < s_discovered[i].depth) ||
+                (s_discovered[j].rootId == s_discovered[i].rootId &&
+                 s_discovered[j].depth == s_discovered[i].depth &&
+                 s_discovered[j].failures < s_discovered[i].failures) ||
+                (s_discovered[j].rootId == s_discovered[i].rootId &&
+                 s_discovered[j].depth == s_discovered[i].depth &&
+                 s_discovered[j].failures == s_discovered[i].failures &&
+                 s_discovered[j].rssi > s_discovered[i].rssi))
+            {
+                DiscoveredPeer_T tmp = s_discovered[i];
+                s_discovered[i] = s_discovered[j];
+                s_discovered[j] = tmp;
+            }
+}
+
 
 
 void APP_BLE_ConnectNextPeer(void)
 {
-    if (!s_initialScanDone)
-    {
-        s_initialScanDone = true;
-        BLE_GAP_SetScanningEnable(false, 0, 0, 0);
-        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Discovery ended found=%d\r\n", (int)s_discoveredCount);
-    }
+    /* Candidate selection starts only after the complete scan window. */
+    if (!s_initialScanDone || s_scanActive)
+        return;
 
     if (s_pendingPeerNodeId != 0)
         return;
@@ -93,6 +220,15 @@ void APP_BLE_ConnectNextPeer(void)
 
         if (CONN_MGR_GetCentralCount() >= MESH_MAX_CENTRAL)
             return;
+        if ((xTaskGetTickCount() - peer->lastSeenTick) >= MESH_PEER_MAX_AGE_TICKS)
+            continue;
+        if (peer->nodeId >= MESH_GetNodeId())
+            continue; /* deterministic direction prevents reciprocal links */
+        if (peer->freeSlots == 0U)
+            continue;
+        if (peer->retryAfterTick != 0U &&
+            (int32_t)(xTaskGetTickCount() - peer->retryAfterTick) < 0)
+            continue; /* refused us recently, still on hold-off */
         if (CONN_MGR_IsConnectedToPeer(peer->nodeId))
             continue;
 
@@ -104,15 +240,20 @@ void APP_BLE_ConnectNextPeer(void)
         params.connParams.intervalMin = 0x50;
         params.connParams.intervalMax = 0xA0;
         params.connParams.latency = 0;
-        params.connParams.supervisionTimeout = 0x0190;
+        /* 8 s. A node runs up to six links while it also advertises and
+           periodically scans, so a 4 s supervision timeout (20 connection
+           events at 200 ms) drops links purely from radio contention. */
+        params.connParams.supervisionTimeout = 0x0320;
 
         s_pendingPeerNodeId = peer->nodeId;
+        s_pendingSinceTick = xTaskGetTickCount();
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connecting to DIMMER_%02d\r\n", peer->nodeId);
         uint16_t status = BLE_GAP_CreateConnection(&params);
         if (status != 0)
         {
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "CreateConn FAIL 0x%04X\r\n", status);
             s_pendingPeerNodeId = 0;
+            mesh_BackoffPeer(peer->nodeId);
             continue;
         }
         return;
@@ -121,7 +262,45 @@ void APP_BLE_ConnectNextPeer(void)
 
 void APP_BLE_RescanHandler(void)
 {
-    BLE_GAP_SetAdvEnable(0x01, 0x00);
+    uint32_t now = xTaskGetTickCount();
+    (void)BLE_GAP_SetAdvEnable(0x01, 0x00);
+
+    /* BLE_GAP_EVT_SCAN_TIMEOUT is the only event that releases the discovery
+       gate. If it is lost or delayed the node stays a passive peripheral for
+       ever, so close the window locally once the guard time has passed. */
+    if (s_scanActive && (now - s_scanStartTick) >= MESH_SCAN_GUARD_TICKS)
+    {
+        (void)BLE_GAP_SetScanningEnable(false, 0, 0, 0);
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Scan window closed locally\r\n");
+        APP_WLS_BLE_ScanTimedOut();
+        now = xTaskGetTickCount();
+    }
+
+    /* BLE_GAP_CreateConnection never times out on its own. A peer that
+       disappears mid-attempt would otherwise block every further connection
+       attempt and every rescan, because both require no pending peer. */
+    if (s_pendingPeerNodeId != 0U &&
+        (now - s_pendingSinceTick) >= MESH_CONNECT_GUARD_TICKS)
+    {
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connect timeout DIMMER_%02d\r\n",
+            s_pendingPeerNodeId);
+        (void)BLE_GAP_CreateConnectionCancel();
+        mesh_BackoffPeer(s_pendingPeerNodeId);
+        s_pendingPeerNodeId = 0U;
+    }
+
+    if (!s_scanActive && s_pendingPeerNodeId == 0U &&
+        (s_repairRequested || (now - s_lastScanTick) >= MESH_RESCAN_PERIOD_TICKS))
+    {
+        s_connectIndex = 0U;
+        mesh_SortCandidates();
+        if (APP_BLE_StartScan())
+        {
+            s_repairRequested = false;
+            s_lastScanTick = now;
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Periodic topology scan\r\n");
+        }
+    }
 }
 // *****************************************************************************
 // *****************************************************************************
@@ -192,6 +371,17 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
     ConnRole_T role;
     ConnType_T type = CONN_TYPE_UNKNOWN;
 
+    /* BLE_GAP_EVT_CONNECTED is also emitted when an outgoing connection
+       attempt fails.  Never add an invalid handle to the mesh table. */
+    if (p_evtConnect->status != 0U)
+    {
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connect failed status=0x%02X\r\n",
+            p_evtConnect->status);
+        s_pendingPeerNodeId = 0U;
+        (void)BLE_GAP_SetAdvEnable(true, 0U);
+        return;
+    }
+
     if (p_evtConnect->role == 0)
         role = CONN_ROLE_CENTRAL;
     else
@@ -208,6 +398,7 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
     {
         s_initialScanDone = true;
         BLE_GAP_SetScanningEnable(false, 0, 0, 0);
+        s_scanActive = false;
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Discovery ended found=%d\r\n", (int)s_discoveredCount);
     }
 
@@ -222,6 +413,7 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
     }
 
     CONN_MGR_SetType(p_evtConnect->connHandle, type);
+    MESH_TopologyChanged();
 
     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connected hdl=0x%04X role=%s C=%d P=%d\r\n",
         p_evtConnect->connHandle, (role == CONN_ROLE_CENTRAL) ? "C" : "P",
@@ -248,11 +440,27 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
 */
 void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
 {
+    MeshConn_T *lost = CONN_MGR_GetByHandle(p_evtDisconnect->connHandle);
+    uint8_t lostNodeId = (lost != NULL) ? lost->peerNodeId : 0U;
+    uint32_t lifetime = (lost != NULL) ?
+        (xTaskGetTickCount() - lost->createdTick) : 0U;
+    s_pendingPeerNodeId = 0U;
+    if (lostNodeId != 0U)
+    {
+        if (lifetime >= MESH_LINK_STABLE_TICKS)
+            APP_BLE_MarkPeerDisconnected(lostNodeId);
+        else
+            APP_BLE_MarkPeerUnstable(lostNodeId);
+    }
+    MESH_OnLinkLost(lostNodeId);
     CONN_MGR_RemoveConnection(p_evtDisconnect->connHandle);
+    MESH_TopologyChanged();
     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Disconnected hdl=0x%04X reason=0x%02X\r\n",
         p_evtDisconnect->connHandle, p_evtDisconnect->reason);
 
     BLE_GAP_SetAdvEnable(0x01, 0x00);
+    s_repairRequested = true;
+    s_lastScanTick = 0U;
 }
 /*******************************************************************************
   Function:
@@ -271,15 +479,12 @@ void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
   Returns:
     None.
 */
-static bool mesh_IsPeerDiscovered(uint8_t nodeId)
+static int16_t mesh_FindPeerByAddress(const BLE_GAP_Addr_T *addr)
 {
     uint8_t i;
     for (i = 0; i < s_discoveredCount; i++)
-    {
-        if (s_discovered[i].nodeId == nodeId)
-            return true;
-    }
-    return false;
+        if (mesh_SameAddress(&s_discovered[i].addr, addr)) return (int16_t)i;
+    return -1;
 }
 
 void APP_WLS_BLE_AdvertisementReportReceived(BLE_GAP_EvtAdvReport_T *p_evtAdvReport)
@@ -288,6 +493,7 @@ void APP_WLS_BLE_AdvertisementReportReceived(BLE_GAP_EvtAdvReport_T *p_evtAdvRep
     uint8_t advLen = p_evtAdvReport->length;
     uint8_t offset = 0;
     uint8_t myId = MESH_GetNodeId();
+    int16_t reportPeerIndex = mesh_FindPeerByAddress(&p_evtAdvReport->addr);
 
     while (offset < advLen)
     {
@@ -305,19 +511,61 @@ void APP_WLS_BLE_AdvertisementReportReceived(BLE_GAP_EvtAdvReport_T *p_evtAdvRep
                 uint8_t d2 = p_advData[offset + 10] - '0';
                 uint8_t peerNodeId = d1 * 10 + d2;
 
-                if (peerNodeId == myId) return;
-                if (myId <= peerNodeId) return;
-                if (mesh_IsPeerDiscovered(peerNodeId)) return;
-                if (s_discoveredCount >= MESH_MAX_DISCOVERED) return;
+                int16_t peerIndex;
+                uint32_t now = xTaskGetTickCount();
+                if (peerNodeId == myId) {
+                    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "DUPLICATE NODE ID %u detected\r\n", peerNodeId);
+                    return;
+                }
+                peerIndex = mesh_FindPeerByAddress(&p_evtAdvReport->addr);
+                if (peerIndex >= 0)
+                {
+                    s_discovered[peerIndex].nodeId = peerNodeId;
+                    s_discovered[peerIndex].rssi = p_evtAdvReport->rssi;
+                    s_discovered[peerIndex].lastSeenTick = now;
+                    reportPeerIndex = peerIndex;
+                }
+                else if (s_discoveredCount >= MESH_MAX_DISCOVERED)
+                {
+                    uint8_t weakest = 0U, i;
+                    for (i = 1U; i < s_discoveredCount; i++)
+                        if (s_discovered[i].rssi < s_discovered[weakest].rssi) weakest = i;
+                    if (p_evtAdvReport->rssi <= s_discovered[weakest].rssi) return;
+                    peerIndex = weakest;
+                }
+                else peerIndex = s_discoveredCount++;
 
-                s_discovered[s_discoveredCount].addr.addrType = p_evtAdvReport->addr.addrType;
-                memcpy(s_discovered[s_discoveredCount].addr.addr, p_evtAdvReport->addr.addr, GAP_MAX_BD_ADDRESS_LEN);
-                s_discovered[s_discoveredCount].nodeId = peerNodeId;
-                s_discoveredCount++;
+                if (reportPeerIndex < 0)
+                {
+                    s_discovered[peerIndex].addr = p_evtAdvReport->addr;
+                    s_discovered[peerIndex].nodeId = peerNodeId;
+                    s_discovered[peerIndex].rssi = p_evtAdvReport->rssi;
+                    s_discovered[peerIndex].lastSeenTick = now;
+                    s_discovered[peerIndex].failures = 0U;
+                    s_discovered[peerIndex].rootId = peerNodeId;
+                    s_discovered[peerIndex].depth = 0U;
+                    s_discovered[peerIndex].freeSlots = 1U;
+                    s_discovered[peerIndex].flags = 0U;
+                    s_discovered[peerIndex].retryAfterTick = 0U;
+                    reportPeerIndex = peerIndex;
 
-                SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Found DIMMER_%02d (%d total)\r\n",
-                    peerNodeId, (int)s_discoveredCount);
-                return;
+                    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Found DIMMER_%02d (%d total)\r\n",
+                        peerNodeId, (int)s_discoveredCount);
+                }
+            }
+        }
+        else if (fieldType == 0x16U && fieldLen >= 9U &&
+                 p_advData[offset + 2] == 0xDAU && p_advData[offset + 3] == 0xFEU &&
+                 p_advData[offset + 5] >= 0x02U)
+        {
+            if (reportPeerIndex < 0)
+                reportPeerIndex = mesh_FindPeerByAddress(&p_evtAdvReport->addr);
+            if (reportPeerIndex >= 0)
+            {
+                s_discovered[reportPeerIndex].flags = p_advData[offset + 6];
+                s_discovered[reportPeerIndex].freeSlots = p_advData[offset + 7];
+                s_discovered[reportPeerIndex].rootId = p_advData[offset + 8];
+                s_discovered[reportPeerIndex].depth = p_advData[offset + 9];
             }
         }
         offset += fieldLen + 1;
@@ -364,6 +612,8 @@ void APP_WLS_BLE_ExtendedAdvertisementReportReceived(BLE_GAP_EvtExtAdvReport_T *
 void APP_WLS_BLE_ScanTimedOut()
 {
     s_initialScanDone = true;
+    s_scanActive = false;
+    s_lastScanTick = xTaskGetTickCount();
 
     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Scan done C=%d P=%d found=%d\r\n",
         CONN_MGR_GetCentralCount(), CONN_MGR_GetPeripheralCount(),
@@ -373,6 +623,7 @@ void APP_WLS_BLE_ScanTimedOut()
 
     BLE_GAP_SetAdvEnable(0x01, 0x00);
 
+    mesh_SortCandidates();
     s_connectIndex = 0;
     APP_BLE_ConnectNextPeer();
 }
@@ -395,6 +646,8 @@ void APP_WLS_BLE_ScanTimedOut()
 */
 void APP_WLS_BLE_AdvertisementCompleted()
 {
+    /* Advertising may complete asynchronously. Keep the node discoverable. */
+    (void)BLE_GAP_SetAdvEnable(true, 0U);
 }
 /*******************************************************************************
   Function:
@@ -415,7 +668,7 @@ void APP_WLS_BLE_AdvertisementCompleted()
 */
 void APP_WLS_BLE_AdvertisementTimedOut()
 {
-/* TODO: implement your application code.*/ 
+    (void)BLE_GAP_SetAdvEnable(true, 0U);
 }
 /*******************************************************************************
   Function:

@@ -191,12 +191,27 @@ void APP_BleStackEvtHandler(STACK_Event_T *p_stackEvt)
 
 
 
+static uint8_t s_meshAdvData[] = CONFIG_BLE_GAP_ADV_DATA;
+
+void APP_BLE_UpdateTopologyAdvertisement(uint8_t rootId, uint8_t depth,
+    uint8_t freeMeshSlots, uint8_t flags)
+{
+    BLE_GAP_AdvDataParams_T params;
+    s_meshAdvData[20] = flags;
+    s_meshAdvData[21] = freeMeshSlots;
+    s_meshAdvData[22] = rootId;
+    s_meshAdvData[23] = depth;
+    params.advLen = sizeof(s_meshAdvData);
+    memcpy(params.advData, s_meshAdvData, sizeof(s_meshAdvData));
+    (void)BLE_GAP_SetAdvData(&params);
+}
+
 static void APP_BleConfigBasic(void)
 {
     int8_t                          connTxPower;
     int8_t                          advTxPower;
     BLE_GAP_AdvParams_T             advParam;
-    uint8_t advData[] = CONFIG_BLE_GAP_ADV_DATA;
+    uint8_t *advData = s_meshAdvData;
     BLE_GAP_AdvDataParams_T         appAdvData;
     uint8_t scanRspData[] = CONFIG_BLE_GAP_SCAN_RSP_DATA;
     BLE_GAP_AdvDataParams_T         appScanRspData;
@@ -210,6 +225,12 @@ static void APP_BleConfigBasic(void)
     }
     advData[12] = '0' + (advNodeId / 10);
     advData[13] = '0' + (advNodeId % 10);
+    advData[18] = advNodeId;
+    advData[19] = 0x02U;
+    advData[20] = 0x01U;
+    advData[21] = 5U;
+    advData[22] = advNodeId;
+    advData[23] = 0U;
 
     BLE_GAP_SetAdvTxPowerLevel(CONFIG_BLE_GAP_ADV_TX_PWR, &advTxPower);
 

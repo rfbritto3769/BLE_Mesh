@@ -123,6 +123,7 @@ switch(p_event->eventId)
     case BLE_TRSPC_EVT_DISC_COMPLETE:
     {
         CONN_MGR_SetReady(p_event->eventField.onDiscComplete.connHandle);
+        MESH_SendHello(p_event->eventField.onDiscComplete.connHandle);
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TRSPC disc complete hdl=0x%04X\r\n",
             p_event->eventField.onDiscComplete.connHandle);
         APP_BLE_ConnectNextPeer();
@@ -141,3 +142,4 @@ switch(p_event->eventId)
 
 
 }
+
