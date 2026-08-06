@@ -103,8 +103,14 @@ switch(p_event->eventId)
         MeshConn_T *conn = CONN_MGR_GetByHandle(hdl);
         if (conn != NULL && !conn->topologyReady)
         {
+            /* DL_STATUS is the first event that proves the CBFC data path is
+               open.  Do not let maintenance or forwarding write before it. */
+            CONN_MGR_SetReady(hdl);
             MESH_SendHello(hdl);
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TRSPC DL open hdl=0x%04X\r\n", hdl);
+            /* Establish one central link completely before asking the
+               controller to initiate another. */
+            APP_BLE_ConnectNextPeer();
         }
     }
     break;
@@ -152,10 +158,8 @@ switch(p_event->eventId)
         /* Discovery is done but the transport is not open yet: the stack only
            starts the CBFC downlink handshake after emitting this event. The
            link is marked ready by MESH_SendHello once a write succeeds. */
-        MESH_SendHello(p_event->eventField.onDiscComplete.connHandle);
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TRSPC disc complete hdl=0x%04X\r\n",
             p_event->eventField.onDiscComplete.connHandle);
-        APP_BLE_ConnectNextPeer();
     }
     break;
 
@@ -171,4 +175,3 @@ switch(p_event->eventId)
 
 
 }
-

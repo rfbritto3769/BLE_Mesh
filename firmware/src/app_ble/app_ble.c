@@ -214,6 +214,35 @@ void APP_BLE_UpdateTopologyAdvertisement(uint8_t rootId, uint8_t depth,
     (void)BLE_GAP_SetAdvData(&params);
 }
 
+/* Re-applies the whole advertising configuration, not just the enable. Used
+   when a node has been isolated long enough that the advertising state itself
+   is suspect: a node that stops being seen is invisible to every peer and can
+   never be reconnected to, and the ordinary keep-alive only re-issues the
+   enable, which is a no-op if the stack thinks it is already advertising. */
+void APP_BLE_RestartAdvertising(void)
+{
+    BLE_GAP_AdvParams_T advParam;
+    BLE_GAP_AdvDataParams_T advDataParams;
+    uint16_t res;
+
+    (void)BLE_GAP_SetAdvEnable(false, 0U);
+
+    (void)memset(&advParam, 0, sizeof(advParam));
+    advParam.intervalMin = 320;
+    advParam.intervalMax = 640;
+    advParam.type = CONFIG_BLE_GAP_ADV_TYPE;
+    advParam.advChannelMap = CONFIG_BLE_GAP_ADV_CHANNEL_MAP;
+    advParam.filterPolicy = CONFIG_BLE_GAP_ADV_FILT_POLICY;
+    (void)BLE_GAP_SetAdvParams(&advParam);
+
+    advDataParams.advLen = (uint8_t)sizeof(s_meshAdvData);
+    (void)memcpy(advDataParams.advData, s_meshAdvData, sizeof(s_meshAdvData));
+    (void)BLE_GAP_SetAdvData(&advDataParams);
+
+    res = BLE_GAP_SetAdvEnable(true, 0U);
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "ADV restart res=0x%04X\r\n", res);
+}
+
 static void APP_BleConfigBasic(void)
 {
     int8_t                          connTxPower;

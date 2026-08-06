@@ -202,6 +202,24 @@ void APP_Tasks ( void )
         {
             bool appInitialized = true;
 
+            /* Why the node came up. A node that drops off the mesh either
+               restarted (this line names the cause) or is still running but
+               silent, in which case the STATUS lines keep coming. Printing it
+               once at boot makes the two cases distinguishable by plugging the
+               console into whichever node failed, after the fact. Flags are
+               sticky, so clear them for the next boot. */
+            {
+                uint32_t rcon = RCON_REGS->RCON_RCON;
+                RCON_REGS->RCON_RCONCLR = rcon;
+                SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                    "\r\nRESET RCON=0x%08X%s%s%s%s%s\r\n", (unsigned)rcon,
+                    (rcon & RCON_RCON_POR_Msk)  ? " POR"  : "",
+                    (rcon & RCON_RCON_BOR_Msk)  ? " BOR"  : "",
+                    (rcon & RCON_RCON_WDTO_Msk) ? " WDTO" : "",
+                    (rcon & RCON_RCON_SWR_Msk)  ? " SWR"  : "",
+                    (rcon & RCON_RCON_EXTR_Msk) ? " EXTR" : "");
+            }
+
             PROV_Init();
 
             APP_BleStackInit();

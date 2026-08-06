@@ -49,6 +49,7 @@
 #include "app_ble_callbacks.h"
 #include "definitions.h"
 #include "app_ble_handler.h"
+#include "app_ble.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "mesh_conn_mgr.h"
@@ -64,7 +65,14 @@
 #define MESH_SCAN_DURATION_MS      6000UL
 #define MESH_SCAN_DURATION_UNITS   ((uint16_t)(MESH_SCAN_DURATION_MS / 100UL))
 #define MESH_SCAN_GUARD_TICKS      pdMS_TO_TICKS(MESH_SCAN_DURATION_MS + 3000UL)
-#define MESH_CONNECT_GUARD_TICKS   pdMS_TO_TICKS(10000)
+/* Must exceed the realistic time to acquire a peer. The initiator scans at 20%
+   duty and peers advertise every 200-400 ms across three channels, so
+   acquisition averages several seconds with a long tail. At 10 s this guard
+   was cancelling attempts that were about to succeed, which both backed the
+   peer off for no reason and raced the cancel against the connection actually
+   landing. Kept under MESH_RESCAN_PERIOD_TICKS so a dead attempt cannot block
+   rescanning for a whole cycle. */
+#define MESH_CONNECT_GUARD_TICKS   pdMS_TO_TICKS(15000)
 #define MESH_MAX_DISCOVERED        16
 #define MESH_RESCAN_PERIOD_TICKS   pdMS_TO_TICKS(30000)
 #define MESH_PEER_MAX_AGE_TICKS    pdMS_TO_TICKS(120000)
@@ -81,6 +89,8 @@
    it, or a freeSlots=0 from an old redirect never got refreshed. Rebuild it
    from scratch instead of requiring a manual reset of the node. */
 #define MESH_ISOLATION_HEAL_TICKS  pdMS_TO_TICKS(60000)
+#define MESH_MIN_HEALTHY_LINKS     1U
+#define MESH_DEGRADED_HEAL_TICKS   pdMS_TO_TICKS(120000)
 
 typedef struct {
     BLE_GAP_Addr_T addr;
@@ -93,6 +103,7 @@ typedef struct {
     uint8_t freeSlots;
     uint8_t flags;
     uint32_t retryAfterTick;
+    bool reportedLost;
 } DiscoveredPeer_T;
 
 static uint8_t s_pendingPeerNodeId = 0;
@@ -104,8 +115,15 @@ static bool s_scanActive = true;
 static uint32_t s_lastScanTick = 0;
 static uint32_t s_scanStartTick = 0;
 static uint32_t s_pendingSinceTick = 0;
+static bool s_connectCancelPending = false;
 static uint32_t s_lastLinkedTick = 0;
+static uint32_t s_degradedSinceTick = 0;
 static bool s_repairRequested = false;
+/* Last resort for a node that no lower id will take: see the comment in
+   APP_BLE_ConnectNextPeer. */
+static bool s_allowUpwardLink = false;
+
+static int16_t mesh_FindPeerByAddress(const BLE_GAP_Addr_T *addr);
 
 static bool mesh_SameAddress(const BLE_GAP_Addr_T *a, const BLE_GAP_Addr_T *b)
 {
@@ -172,6 +190,7 @@ bool APP_BLE_StartScan(void)
 void APP_BLE_MarkPeerDisconnected(uint8_t nodeId)
 {
     uint8_t i;
+    uint32_t now = xTaskGetTickCount();
     for (i = 0U; i < s_discoveredCount; i++)
     {
         if (s_discovered[i].nodeId == nodeId)
@@ -180,6 +199,13 @@ void APP_BLE_MarkPeerDisconnected(uint8_t nodeId)
                 s_discovered[i].freeSlots = 1U;
             s_discovered[i].failures = 0U;
             s_discovered[i].retryAfterTick = 0U;
+            /* The peer was exchanging BLE packets until this disconnect, so
+               an old advertising timestamp does not mean it disappeared.
+               Connected controllers commonly suppress duplicate advertising
+               reports. Keep its known address immediately eligible for the
+               repair attempt. */
+            s_discovered[i].lastSeenTick = now;
+            s_discovered[i].reportedLost = false;
         }
     }
 }
@@ -217,9 +243,17 @@ void APP_BLE_ConnectNextPeer(void)
     if (!s_initialScanDone || s_scanActive)
         return;
 
-    if (s_pendingPeerNodeId != 0)
+    if (s_pendingPeerNodeId != 0 || s_connectCancelPending)
         return;
 
+    /* The WBZ controller is much more reliable when GATT discovery and the
+       TRSPC/CBFC handshake of one central link finish before another create
+       procedure starts.  This also prevents the 0x3E pattern seen in logs. */
+    if (CONN_MGR_HasUnreadyMeshLink())
+        return;
+
+    for (;;)
+    {
     while (s_connectIndex < s_discoveredCount)
     {
         DiscoveredPeer_T *peer = &s_discovered[s_connectIndex];
@@ -228,20 +262,28 @@ void APP_BLE_ConnectNextPeer(void)
         /* Each candidate is evaluated once per scan pass, so logging the
            rejection reason here is self-rate-limiting. Without it a node that
            stops reconnecting gives no clue which gate is holding it back. */
+        /* Not logged: having every uplink in use is the healthy steady state,
+           and this path is reached once per maintenance tick, so printing here
+           floods the console and drowns the skips that do indicate a fault. */
         if (CONN_MGR_GetCentralCount() >= MESH_MAX_CENTRAL)
-        {
-            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: central full\r\n",
-                peer->nodeId);
             return;
-        }
         if ((xTaskGetTickCount() - peer->lastSeenTick) >= MESH_PEER_MAX_AGE_TICKS)
         {
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: not seen\r\n",
                 peer->nodeId);
             continue;
         }
-        if (peer->nodeId >= MESH_GetNodeId())
-            continue; /* deterministic direction prevents reciprocal links */
+        if (peer->nodeId == MESH_GetNodeId())
+            continue;
+        /* Edges normally run downwards only, which keeps the direction
+           deterministic and prevents reciprocal links. The cost is that the
+           highest node id in the network offers child slots nobody can ever
+           take, so the usable supply is structurally smaller than the demand
+           and one node can be left with no parent at all. A node that has been
+           completely isolated is allowed to climb instead, which makes those
+           slots reachable and lets the graph always close. */
+        if (peer->nodeId > MESH_GetNodeId() && !s_allowUpwardLink)
+            continue;
         if (peer->freeSlots == 0U)
         {
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: no free slot\r\n",
@@ -263,15 +305,19 @@ void APP_BLE_ConnectNextPeer(void)
         params.scanWindow = APP_BLE_CREATE_CONN_SCAN_WINDOW;
         params.filterPolicy = BLE_GAP_SCAN_FP_ACCEPT_ALL;
         params.peerAddr = peer->addr;
-        params.connParams.intervalMin = 0x50;
-        params.connParams.intervalMax = 0xA0;
+        params.connParams.intervalMin = 0x20; /* 40 ms */
+        params.connParams.intervalMax = 0x40; /* 80 ms */
         params.connParams.latency = 0;
-        /* 8 s. A node runs up to six links while it also advertises and
-           periodically scans, so a 4 s supervision timeout (20 connection
-           events at 200 ms) drops links purely from radio contention. */
-        params.connParams.supervisionTimeout = 0x0320;
+        /* 20 s. Must comfortably exceed the periodic scan window
+           (MESH_SCAN_DURATION_MS), during which this node's connection events
+           compete with a 20% duty scan: at 8 s a single scan plus ordinary
+           contention was enough to time out healthy links with reason 0x08.
+           Failure detection does not depend on this - the mesh ages a silent
+           link out after MESH_LINK_DEAD_TICKS. */
+        params.connParams.supervisionTimeout = 0x07D0; /* 20 s */
 
         s_pendingPeerNodeId = peer->nodeId;
+        s_connectCancelPending = false;
         s_pendingSinceTick = xTaskGetTickCount();
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connecting to DIMMER_%02d\r\n", peer->nodeId);
         uint16_t status = BLE_GAP_CreateConnection(&params);
@@ -279,10 +325,39 @@ void APP_BLE_ConnectNextPeer(void)
         {
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "CreateConn FAIL 0x%04X\r\n", status);
             s_pendingPeerNodeId = 0;
+            /* These two say nothing about the peer, only about our own stack:
+               the initiator is still busy (BLE_GAP_CreateConnectionCancel is
+               asynchronous and has not completed yet) or a link to it already
+               exists. Backing the peer off here punishes the whole candidate
+               list in a single burst - every remaining peer fails the same way
+               - and leaves the node with nothing left to try. Give the
+               controller a maintenance cycle and start over. */
+            if (status == MBA_RES_COMMAND_DISALLOWED ||
+                status == MBA_RES_CONN_ALREADY_EXISTS)
+                return;
             mesh_BackoffPeer(peer->nodeId);
             continue;
         }
         return;
+    }
+
+    /* Downward candidates exhausted without filling the uplink quota. Because
+       edges only ever run towards lower node ids, a node whose visible lower
+       ids are all full has nowhere left to go and stays out of the mesh - and
+       the child slots of the highest ids can never be taken by anyone. Retry
+       the same list allowing upward links before giving up. Simulation of the
+       partial-visibility case puts orphaned and partitioned topologies at
+       13% and 23% without this, and at zero with it. */
+    if (s_allowUpwardLink || CONN_MGR_GetCentralCount() >= MESH_MAX_CENTRAL)
+        return;
+    /* A single link is connected but not redundant: if it is also the path by
+       which a broadcast arrived, there is nowhere to forward it. Permit an
+       upward edge until the node has two independent local links. */
+    if (CONN_MGR_GetLocalLinkCount() >= MESH_MIN_HEALTHY_LINKS)
+        return;
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Degraded, allowing upward\r\n");
+    s_allowUpwardLink = true;
+    s_connectIndex = 0U;
     }
 }
 
@@ -293,11 +368,18 @@ void APP_BLE_RescanHandler(void)
 
     /* Connect, disconnect, adv-complete and adv-timeout all re-enable
        advertising already. This is only a safety net, so poll it slowly
-       instead of issuing an HCI command every maintenance tick. */
+       instead of issuing an HCI command every maintenance tick.
+       A node that silently stops advertising becomes invisible to everyone
+       else and can never be reconnected to, so surface the failure: the
+       result was being discarded everywhere. MBA_RES_COMMAND_DISALLOWED just
+       means it is already advertising, which is the normal case. */
     if ((now - lastAdvKickTick) >= pdMS_TO_TICKS(10000))
     {
+        uint16_t advStatus = BLE_GAP_SetAdvEnable(0x01, 0x00);
         lastAdvKickTick = now;
-        (void)BLE_GAP_SetAdvEnable(0x01, 0x00);
+        if (advStatus != MBA_RES_SUCCESS &&
+            advStatus != MBA_RES_COMMAND_DISALLOWED)
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "ADV enable FAIL 0x%04X\r\n", advStatus);
     }
 
     /* BLE_GAP_EVT_SCAN_TIMEOUT is the only event that releases the discovery
@@ -319,32 +401,83 @@ void APP_BLE_RescanHandler(void)
     {
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connect timeout DIMMER_%02d\r\n",
             s_pendingPeerNodeId);
-        (void)BLE_GAP_CreateConnectionCancel();
-        mesh_BackoffPeer(s_pendingPeerNodeId);
-        s_pendingPeerNodeId = 0U;
+        uint16_t cancelStatus = BLE_GAP_CreateConnectionCancel();
+        if (cancelStatus == MBA_RES_SUCCESS)
+        {
+            /* CreateConnectionCancel is asynchronous. BLE_GAP_EVT_CONNECTED
+               with a failure status is the completion event; until it arrives
+               the controller still rejects every new create with 0x010C. */
+            mesh_BackoffPeer(s_pendingPeerNodeId);
+            s_connectCancelPending = true;
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connect cancel pending\r\n");
+        }
+        else
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connect cancel FAIL 0x%04X\r\n",
+                cancelStatus);
+        }
     }
 
     if (CONN_MGR_GetLocalLinkCount() > 0U)
     {
         s_lastLinkedTick = now;
     }
-    else if ((now - s_lastLinkedTick) >= MESH_ISOLATION_HEAL_TICKS)
+    else if ((now - s_lastLinkedTick) >= MESH_ISOLATION_HEAL_TICKS &&
+             !s_scanActive && s_pendingPeerNodeId == 0U &&
+             !s_connectCancelPending)
     {
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Isolated %ds, resetting discovery\r\n",
             (int)(MESH_ISOLATION_HEAL_TICKS / configTICK_RATE_HZ));
+        /* Being alone this long can also mean nobody can see us, so rebuild
+           the advertising state rather than only re-issuing the enable. */
+        APP_BLE_RestartAdvertising();
         memset(s_discovered, 0, sizeof(s_discovered));
         s_discoveredCount = 0U;
         s_connectIndex = 0U;
         s_pendingPeerNodeId = 0U;
+        s_connectCancelPending = false;
         s_lastLinkedTick = now;
         s_repairRequested = true;
         s_lastScanTick = 0U;
     }
 
+    /* A node with one link is not isolated, but it is still a leaf with no
+       alternate forwarding path. Never let that state become permanent. */
+    if (CONN_MGR_GetLocalLinkCount() >= MESH_MIN_HEALTHY_LINKS)
+    {
+        s_degradedSinceTick = 0U;
+    }
+    else
+    {
+        if (s_degradedSinceTick == 0U)
+            s_degradedSinceTick = now;
+        else if ((now - s_degradedSinceTick) >= MESH_DEGRADED_HEAL_TICKS &&
+                 !s_scanActive && s_pendingPeerNodeId == 0U &&
+                 !s_connectCancelPending)
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                "Degraded 120s, rebuilding discovery links=%u\r\n",
+                CONN_MGR_GetLocalLinkCount());
+            APP_BLE_RestartAdvertising();
+            memset(s_discovered, 0, sizeof(s_discovered));
+            s_discoveredCount = 0U;
+            s_connectIndex = 0U;
+            s_allowUpwardLink = false;
+            s_repairRequested = true;
+            s_lastScanTick = 0U;
+            s_degradedSinceTick = now;
+        }
+    }
+
     if (!s_scanActive && s_pendingPeerNodeId == 0U &&
+        !s_connectCancelPending &&
+        !CONN_MGR_HasUnreadyMeshLink() &&
+        (s_repairRequested ||
+         CONN_MGR_GetLocalLinkCount() < MESH_MIN_HEALTHY_LINKS) &&
         (s_repairRequested || (now - s_lastScanTick) >= MESH_RESCAN_PERIOD_TICKS))
     {
         s_connectIndex = 0U;
+        s_allowUpwardLink = false; /* each scan retries downward first */
         mesh_SortCandidates();
         if (APP_BLE_StartScan())
         {
@@ -430,6 +563,8 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Connect failed status=0x%02X\r\n",
             p_evtConnect->status);
         s_pendingPeerNodeId = 0U;
+        s_connectCancelPending = false;
+        s_repairRequested = true;
         (void)BLE_GAP_SetAdvEnable(true, 0U);
         return;
     }
@@ -456,11 +591,29 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
 
     if (role == CONN_ROLE_CENTRAL)
     {
+        s_connectCancelPending = false;
         type = CONN_TYPE_LOCAL;
         if (s_pendingPeerNodeId != 0)
         {
             CONN_MGR_SetPeerNodeId(p_evtConnect->connHandle, s_pendingPeerNodeId);
             s_pendingPeerNodeId = 0;
+        }
+        else
+        {
+            /* The attempt was given up on (the guard timed out and cancelled)
+               but the connection landed anyway, so the pending id is gone.
+               Recover it from the advertising address instead of leaving the
+               link with peer id 0, which makes this node address its JOIN and
+               heartbeats to node 0 and hides the peer from
+               CONN_MGR_IsConnectedToPeer. */
+            int16_t idx = mesh_FindPeerByAddress(&p_evtConnect->remoteAddr);
+            if (idx >= 0)
+            {
+                CONN_MGR_SetPeerNodeId(p_evtConnect->connHandle,
+                    s_discovered[idx].nodeId);
+                SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Late connect resolved DIMMER_%02d\r\n",
+                    s_discovered[idx].nodeId);
+            }
         }
     }
 
@@ -496,7 +649,9 @@ void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
     uint8_t lostNodeId = (lost != NULL) ? lost->peerNodeId : 0U;
     uint32_t lifetime = (lost != NULL) ?
         (xTaskGetTickCount() - lost->createdTick) : 0U;
-    s_pendingPeerNodeId = 0U;
+    /* A peripheral or another established link may disconnect while an
+       outgoing create/cancel procedure is pending.  Its disconnect event is
+       unrelated and must not release the controller gate. */
     if (lostNodeId != 0U)
     {
         if (lifetime >= MESH_LINK_STABLE_TICKS)
@@ -504,8 +659,12 @@ void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
         else
             APP_BLE_MarkPeerUnstable(lostNodeId);
     }
-    MESH_OnLinkLost(lostNodeId);
     CONN_MGR_RemoveConnection(p_evtDisconnect->connHandle);
+    /* A simultaneous reciprocal connection may have just been removed. Do
+       not declare the parent lost when the surviving link reaches the same
+       peer. */
+    if (lostNodeId == 0U || !CONN_MGR_IsConnectedToPeer(lostNodeId))
+        MESH_OnLinkLost(lostNodeId);
     MESH_TopologyChanged();
     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Disconnected hdl=0x%04X reason=0x%02X\r\n",
         p_evtDisconnect->connHandle, p_evtDisconnect->reason);
@@ -575,6 +734,12 @@ void APP_WLS_BLE_AdvertisementReportReceived(BLE_GAP_EvtAdvReport_T *p_evtAdvRep
                     s_discovered[peerIndex].nodeId = peerNodeId;
                     s_discovered[peerIndex].rssi = p_evtAdvReport->rssi;
                     s_discovered[peerIndex].lastSeenTick = now;
+                    if (s_discovered[peerIndex].reportedLost)
+                    {
+                        s_discovered[peerIndex].reportedLost = false;
+                        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "PEER BACK DIMMER_%02d\r\n",
+                            peerNodeId);
+                    }
                     reportPeerIndex = peerIndex;
                 }
                 else if (s_discoveredCount >= MESH_MAX_DISCOVERED)
@@ -599,6 +764,7 @@ void APP_WLS_BLE_AdvertisementReportReceived(BLE_GAP_EvtAdvReport_T *p_evtAdvRep
                     s_discovered[peerIndex].freeSlots = 1U;
                     s_discovered[peerIndex].flags = 0U;
                     s_discovered[peerIndex].retryAfterTick = 0U;
+                    s_discovered[peerIndex].reportedLost = false;
                     reportPeerIndex = peerIndex;
 
                     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Found DIMMER_%02d (%d total)\r\n",
@@ -671,12 +837,41 @@ void APP_WLS_BLE_ScanTimedOut()
         CONN_MGR_GetCentralCount(), CONN_MGR_GetPeripheralCount(),
         (int)s_discoveredCount);
 
-    CONN_MGR_SweepStale(pdMS_TO_TICKS(15000));
+    /* Same 30 s budget as the periodic sweep in APP_Tasks: GATT discovery plus
+       CCC setup can take well over 15 s under load, and sweeping earlier tears
+       down links that were about to come up. */
+    CONN_MGR_SweepStale(pdMS_TO_TICKS(30000));
 
     BLE_GAP_SetAdvEnable(0x01, 0x00);
 
+    /* Report a peer that has stopped advertising, once, from whichever node
+       happens to be monitored. A node that already has all its uplinks never
+       walks the candidate list, so without this a healthy neighbour gives no
+       sign at all that somebody dropped off the air - and which node fails is
+       not predictable, so it cannot be watched directly. */
+    {
+        uint8_t i;
+        uint32_t now = xTaskGetTickCount();
+        for (i = 0U; i < s_discoveredCount; i++)
+        {
+            if (s_discovered[i].reportedLost || s_discovered[i].nodeId == 0U ||
+                CONN_MGR_IsConnectedToPeer(s_discovered[i].nodeId))
+                continue;
+            if ((now - s_discovered[i].lastSeenTick) >= MESH_PEER_MAX_AGE_TICKS)
+            {
+                s_discovered[i].reportedLost = true;
+                SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                    "PEER LOST DIMMER_%02d (silent %us)\r\n",
+                    s_discovered[i].nodeId,
+                    (unsigned)((now - s_discovered[i].lastSeenTick) /
+                        configTICK_RATE_HZ));
+            }
+        }
+    }
+
     mesh_SortCandidates();
     s_connectIndex = 0;
+    s_allowUpwardLink = false; /* each scan retries downward first */
     APP_BLE_ConnectNextPeer();
 }
 /*******************************************************************************

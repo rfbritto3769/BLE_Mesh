@@ -36,6 +36,9 @@ bool CONN_MGR_AddConnection(uint16_t connHandle, ConnRole_T role)
             s_connTable[i].rssi = -127;
             s_connTable[i].lastJoinTick = 0U;
             s_connTable[i].joinRetries = 0U;
+            s_connTable[i].heartbeatToken = 0U;
+            s_connTable[i].heartbeatMisses = 0U;
+            s_connTable[i].heartbeatAwaitingAck = false;
             return true;
         }
     }
@@ -164,6 +167,34 @@ bool CONN_MGR_IsConnectedToPeer(uint8_t nodeId)
     for (i = 0; i < MESH_MAX_CONNECTIONS; i++)
     {
         if (s_connTable[i].inUse && s_connTable[i].peerNodeId == nodeId)
+            return true;
+    }
+    return false;
+}
+
+bool CONN_MGR_HasUnreadyCentral(void)
+{
+    uint8_t i;
+    for (i = 0; i < MESH_MAX_CONNECTIONS; i++)
+    {
+        if (s_connTable[i].inUse &&
+            s_connTable[i].role == CONN_ROLE_CENTRAL &&
+            !s_connTable[i].topologyReady)
+            return true;
+    }
+    return false;
+}
+
+bool CONN_MGR_HasUnreadyMeshLink(void)
+{
+    uint8_t i;
+    for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
+    {
+        if (!s_connTable[i].inUse || s_connTable[i].type == CONN_TYPE_PHONE)
+            continue;
+        if (!s_connTable[i].isReady ||
+            (s_connTable[i].type == CONN_TYPE_LOCAL &&
+             !s_connTable[i].topologyReady))
             return true;
     }
     return false;

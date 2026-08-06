@@ -83,10 +83,10 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                 if (conn && conn->role == CONN_ROLE_PERIPHERAL)
                 {
                     BLE_GAP_ConnParams_T params;
-                    params.intervalMin = 0x50;
-                    params.intervalMax = 0xA0;
+                    params.intervalMin = 0x20; /* 40 ms */
+                    params.intervalMax = 0x40; /* 80 ms */
                     params.latency = 0;
-                    params.supervisionTimeout = 0x0320; /* 8 s, see central side */
+                    params.supervisionTimeout = 0x07D0; /* 20 s, see central side */
                     BLE_GAP_UpdateConnParam(hdl, &params);
                 }
             }

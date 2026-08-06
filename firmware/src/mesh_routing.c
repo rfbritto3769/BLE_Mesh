@@ -83,6 +83,48 @@ static MeshChildSummary_T s_childSummary[MESH_CHILD_SUMMARY_SIZE];
 
 static bool mesh_SendToConn(MeshConn_T *conn, uint8_t *p_packet, uint16_t packetLen);
 static bool mesh_TrySendToConn(MeshConn_T *conn, uint8_t *p_packet, uint16_t packetLen);
+/* Result of the most recent mesh_TrySendToConn, so the caller can tell
+   congestion (worth queuing) from a structural refusal (not worth queuing). */
+static uint16_t s_lastSendStatus;
+
+/* Simultaneous startup can make both nodes initiate towards each other before
+   either JOIN is visible. Keep exactly one physical link per pair: the higher
+   node id owns the central role and the lower id owns the peripheral role. */
+static bool mesh_ResolveDuplicatePeerLink(MeshConn_T *current, uint8_t peerId)
+{
+    uint8_t i;
+    ConnRole_T wantedRole = (s_myNodeId > peerId) ?
+        CONN_ROLE_CENTRAL : CONN_ROLE_PERIPHERAL;
+    MeshConn_T *table = CONN_MGR_GetTable();
+
+    if (current == NULL || peerId == 0U)
+        return true;
+
+    for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
+    {
+        MeshConn_T *other = &table[i];
+        if (!other->inUse || other->connHandle == current->connHandle ||
+            other->peerNodeId != peerId || other->type != CONN_TYPE_LOCAL)
+            continue;
+
+        if (current->role != wantedRole)
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                "Duplicate peer %u: drop hdl=0x%04X role=%c\r\n", peerId,
+                current->connHandle,
+                (current->role == CONN_ROLE_CENTRAL) ? 'C' : 'P');
+            (void)BLE_GAP_Disconnect(current->connHandle, 0x13);
+            return false;
+        }
+
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+            "Duplicate peer %u: drop hdl=0x%04X role=%c\r\n", peerId,
+            other->connHandle,
+            (other->role == CONN_ROLE_CENTRAL) ? 'C' : 'P');
+        (void)BLE_GAP_Disconnect(other->connHandle, 0x13);
+    }
+    return true;
+}
 
 /* A scanning peer connects to us as central, so it consumes one of our
    peripheral slots. Advertise the admission capacity actually enforced in the
@@ -268,6 +310,14 @@ static bool mesh_SendToConn(MeshConn_T *conn, uint8_t *p_packet, uint16_t packet
     if (mesh_TrySendToConn(conn, p_packet, packetLen))
         return true;
 
+    /* Only congestion is worth queuing. A structural refusal - the transport
+       is not open yet, or GATT rejected the attribute handle - will refuse the
+       retry identically, so queuing it just occupies a shared slot until it
+       expires. s_lastSendStatus is set by mesh_TrySendToConn. */
+    if (s_lastSendStatus != MBA_RES_NO_RESOURCE &&
+        s_lastSendStatus != MBA_RES_BAD_STATE)
+        return false;
+
     if (packetLen > MESH_MAX_PACKET_SIZE)
         return false;
     for (i = 0U; i < MESH_LINK_TX_QUEUE_SIZE; i++)
@@ -298,6 +348,7 @@ static bool mesh_TrySendToConn(MeshConn_T *conn, uint8_t *p_packet, uint16_t pac
     else if (conn->role == CONN_ROLE_PERIPHERAL)
         status = BLE_TRSPS_SendData(conn->connHandle, packetLen, p_packet);
 
+    s_lastSendStatus = status;
     if (status != 0)
     {
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Send FAIL hdl=0x%04X err=0x%04X\r\n",
@@ -417,9 +468,12 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
         case MESH_CMD_HELLO:
             if (payloadLen >= 1U)
             {
+                MeshConn_T *helloConn = CONN_MGR_GetByHandle(connHandle);
                 CONN_MGR_SetPeerNodeId(connHandle, payload[0]);
                 CONN_MGR_SetType(connHandle, CONN_TYPE_LOCAL);
                 CONN_MGR_SetReady(connHandle);
+                if (!mesh_ResolveDuplicatePeerLink(helloConn, payload[0]))
+                    break;
                 CONN_MGR_SetTopologyReady(connHandle);
             }
             break;
@@ -433,6 +487,8 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                 CONN_MGR_SetPeerNodeId(connHandle, payload[0]);
                 CONN_MGR_SetType(connHandle, CONN_TYPE_LOCAL);
                 CONN_MGR_SetReady(connHandle);
+                if (!mesh_ResolveDuplicatePeerLink(joiner, payload[0]))
+                    break;
                 /* Admission is decided once. A repeated JOIN on a child that
                    is already in the tree (its JOIN_ACCEPT was lost, or its
                    stack re-raised the event) must not be re-evaluated: by then
@@ -475,7 +531,15 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                     CONN_MGR_SetReady(connHandle);
                     CONN_MGR_SetTopologyReady(connHandle);
                 }
-                if (payload[0] < s_rootId || s_parentId == 0U)
+                /* Adopt as parent only towards a lower node id, the same rule
+                   MESH_SendHello applies. The parent relation must be strictly
+                   decreasing or it can close a cycle - which it now can, since
+                   an isolated node is allowed to link upwards. A cycle makes
+                   depth chase itself upwards for ever (count to infinity) and
+                   every step floods a topology report. The link itself stays
+                   fully usable for forwarding; it just is not the parent. */
+                if ((pHdr->src_id < s_myNodeId) &&
+                    (payload[0] < s_rootId || s_parentId == 0U))
                 {
                     s_rootId = payload[0];
                     s_depth = (payload[1] < 0xFEU) ? (uint8_t)(payload[1] + 1U) : 0xFFU;
@@ -488,6 +552,12 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
 
         case MESH_CMD_HEARTBEAT:
             CONN_MGR_Touch(connHandle);
+            /* Echo the per-link token on the same physical connection. This
+               proves both application directions are alive; a BLE connection
+               event alone cannot detect a stalled TRSP/CBFC data path. */
+            if (payloadLen >= 4U && connHandle != 0xFFFFU)
+                (void)mesh_SendDirect(connHandle, pHdr->src_id,
+                    MESH_CMD_HEARTBEAT_ACK, &payload[3], 1U);
             if (payloadLen >= 2U && pHdr->src_id == s_parentId &&
                 (payload[0] != s_rootId || (uint8_t)(payload[1] + 1U) != s_depth))
             {
@@ -495,6 +565,20 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                 s_depth = (uint8_t)(payload[1] + 1U);
                 mesh_UpdateAdvertisement();
                 mesh_MarkTopologyDirty();
+            }
+            break;
+
+        case MESH_CMD_HEARTBEAT_ACK:
+            if (payloadLen >= 1U)
+            {
+                MeshConn_T *ackConn = CONN_MGR_GetByHandle(connHandle);
+                if (ackConn != NULL && ackConn->heartbeatAwaitingAck &&
+                    ackConn->heartbeatToken == payload[0])
+                {
+                    ackConn->heartbeatAwaitingAck = false;
+                    ackConn->heartbeatMisses = 0U;
+                    CONN_MGR_Touch(connHandle);
+                }
             }
             break;
 
@@ -662,16 +746,10 @@ void MESH_ProcessIncoming(uint16_t connHandle, uint16_t dataLen, uint8_t *p_data
         pHdr->seq_num = s_seqNum++;
         pHdr->ttl = MESH_MAX_TTL;
         mesh_AddToDupCache(s_myNodeId, pHdr->seq_num);
-        if ((pHdr->dst_id == MESH_BROADCAST_ADDR ||
-             mesh_IsClusterAddress(pHdr->dst_id)) &&
-            pHdr->cmd == MESH_CMD_SET_DIMMER && dataLen <= MESH_MAX_PACKET_SIZE)
-        {
-            memcpy(s_broadcastRetry.packet, p_data, dataLen);
-            s_broadcastRetry.length = (uint8_t)dataLen;
-            s_broadcastRetry.repeats = 2U;
-            s_broadcastRetry.nextTick = xTaskGetTickCount() + pdMS_TO_TICKS(400);
-            s_broadcastRetry.inUse = true;
-        }
+        /* GATT/CBFC already provides reliable delivery on each physical link.
+           Re-injecting every RGB broadcast with a new sequence number made all
+           nodes execute and flood it again, tripling traffic during slider
+           bursts and starving connection discovery. */
     }
     else
     {
@@ -836,7 +914,7 @@ void MESH_Maintenance(void)
     for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
     {
         uint32_t joinDelay;
-        if (!links[i].inUse || links[i].topologyReady ||
+        if (!links[i].inUse || !links[i].isReady || links[i].topologyReady ||
             links[i].role != CONN_ROLE_CENTRAL || links[i].type != CONN_TYPE_LOCAL)
             continue;
         joinDelay = pdMS_TO_TICKS(1000UL <<
@@ -880,7 +958,6 @@ void MESH_Maintenance(void)
 
     if ((int32_t)(now - s_nextHeartbeatTick) >= 0)
     {
-        uint8_t hb[3] = { s_rootId, s_depth, mesh_FreeSlots() };
         MeshConn_T *table = CONN_MGR_GetTable();
         s_nextHeartbeatTick = now + mesh_HeartbeatDelay();
         for (i = 0; i < MESH_MAX_CONNECTIONS; i++)
@@ -888,15 +965,44 @@ void MESH_Maintenance(void)
             if (!table[i].inUse || !table[i].isReady || !table[i].topologyReady ||
                 table[i].type != CONN_TYPE_LOCAL)
                 continue;
+            if (table[i].heartbeatAwaitingAck)
+            {
+                table[i].heartbeatMisses++;
+                if (table[i].heartbeatMisses >= 3U)
+                {
+                    SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                        "Heartbeat ACK timeout peer=%u hdl=0x%04X\r\n",
+                        table[i].peerNodeId, table[i].connHandle);
+                    (void)BLE_GAP_Disconnect(table[i].connHandle, 0x13);
+                    continue;
+                }
+            }
             /* Central links that are not the primary parent are backup-parent
                links. They also need bidirectional presence traffic or the
                peer will incorrectly age them out after 90 seconds. */
-            (void)mesh_SendDirect(table[i].connHandle, table[i].peerNodeId,
-                MESH_CMD_HEARTBEAT, hb, sizeof(hb));
+            {
+                uint8_t hb[4];
+                hb[0] = s_rootId;
+                hb[1] = s_depth;
+                hb[2] = mesh_FreeSlots();
+                hb[3] = ++table[i].heartbeatToken;
+                if (mesh_SendDirect(table[i].connHandle, table[i].peerNodeId,
+                    MESH_CMD_HEARTBEAT, hb, sizeof(hb)))
+                    table[i].heartbeatAwaitingAck = true;
+            }
             if ((now - table[i].lastActivityTick) >= MESH_LINK_DEAD_TICKS)
                 (void)BLE_GAP_Disconnect(table[i].connHandle, 0x13);
         }
         mesh_UpdateAdvertisement();
+
+        /* One line per heartbeat cycle describing how this node sees itself.
+           When a node drops out of the mesh its own log is the only place
+           that says whether it still had links, still had a parent, and what
+           it was advertising as free capacity. */
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+            "STATUS id=%u links=%u root=%u depth=%u parent=%u free=%u\r\n",
+            s_myNodeId, CONN_MGR_GetLocalLinkCount(), s_rootId, s_depth,
+            s_parentId, mesh_FreeSlots());
     }
 
     if ((now - s_lastFullReportTick) >= MESH_FULL_REPORT_TICKS)
