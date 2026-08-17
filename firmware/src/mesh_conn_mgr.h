@@ -40,6 +40,14 @@ typedef struct {
     bool isReady;
     bool topologyReady;
     bool inUse;
+    /* True when the remote address was already known from a DIMMER_xx
+       advertising report, i.e. this really is a mesh node. Set at connect time,
+       before the peer has said anything, which is the only moment where a mesh
+       child and the phone/GUI can still be told apart: everything else (type,
+       peerNodeId) only becomes known once the peer sends its first packet.
+       Used to keep one peripheral slot free for the app and to keep an idle
+       app link from gating mesh discovery. */
+    bool meshPeer;
     uint32_t createdTick;
     uint32_t lastActivityTick;
     int8_t rssi;
@@ -51,7 +59,7 @@ typedef struct {
 } MeshConn_T;
 
 void CONN_MGR_Init(void);
-bool CONN_MGR_AddConnection(uint16_t connHandle, ConnRole_T role);
+bool CONN_MGR_AddConnection(uint16_t connHandle, ConnRole_T role, bool meshPeer);
 void CONN_MGR_RemoveConnection(uint16_t connHandle);
 void CONN_MGR_SetPeerNodeId(uint16_t connHandle, uint8_t nodeId);
 void CONN_MGR_SetReady(uint16_t connHandle);
@@ -62,7 +70,9 @@ uint8_t CONN_MGR_GetCentralCount(void);
 uint8_t CONN_MGR_GetPeripheralCount(void);
 uint8_t CONN_MGR_GetActiveCount(void);
 uint8_t CONN_MGR_GetMeshPeripheralCount(void);
+uint8_t CONN_MGR_GetMeshChildCount(void);
 uint8_t CONN_MGR_GetLocalLinkCount(void);
+uint8_t CONN_MGR_GetReadyLocalLinkCount(void);
 void CONN_MGR_Touch(uint16_t connHandle);
 void CONN_MGR_SetRssi(uint16_t connHandle, int8_t rssi);
 bool CONN_MGR_IsConnectedToPeer(uint8_t nodeId);

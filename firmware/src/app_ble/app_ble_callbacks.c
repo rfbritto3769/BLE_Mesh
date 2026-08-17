@@ -73,9 +73,23 @@
    landing. Kept under MESH_RESCAN_PERIOD_TICKS so a dead attempt cannot block
    rescanning for a whole cycle. */
 #define MESH_CONNECT_GUARD_TICKS   pdMS_TO_TICKS(15000)
-#define MESH_MAX_DISCOVERED        16
+/* Deliberately far below NODE_ID_MAX. A node only ever holds five links, so
+   the table exists to rank nearby candidates, not to mirror the network: when
+   it fills, the weakest RSSI is evicted and the nearest peers survive, which
+   is exactly the set worth connecting to. It cannot be smaller than the number
+   of nodes in radio range though - at 16 a dense bench of 100 evicted
+   continuously, and every eviction resets that peer's failure count and
+   backoff, so the hold-off never accumulated and APP_BLE_IsNodeIdObserved
+   started missing IDs that do exist. Raising it further is not free either:
+   mesh_FindPeerByAddress runs per advertising report and mesh_SortCandidates
+   is O(n^2) per scan. */
+#define MESH_MAX_DISCOVERED        48
 #define MESH_RESCAN_PERIOD_TICKS   pdMS_TO_TICKS(30000)
-#define MESH_PEER_MAX_AGE_TICKS    pdMS_TO_TICKS(120000)
+/* lastSeenTick only advances while scanning, and a node with healthy links
+   never scans, so this is really "how long a candidate survives between repair
+   scans". At 120 s the whole list expired during normal operation and every
+   repair started from an empty table. */
+#define MESH_PEER_MAX_AGE_TICKS    pdMS_TO_TICKS(300000)
 
 /* A link that dies this fast was refused (JOIN_REDIRECT, connection table
    full), not lost. Retrying it immediately produces a permanent
@@ -88,9 +102,16 @@
    has gone stale: a peer aged out, a backoff outlived the condition that set
    it, or a freeSlots=0 from an old redirect never got refreshed. Rebuild it
    from scratch instead of requiring a manual reset of the node. */
-#define MESH_ISOLATION_HEAL_TICKS  pdMS_TO_TICKS(60000)
+/* Both heals throw the discovery table away and start over from a fresh scan.
+   That is the right move for a node whose view has genuinely gone stale, and
+   the wrong one for a node that is simply waiting its turn: bringing up 100
+   nodes means long stretches with no link while peer backoffs (up to 75 s)
+   run down, and wiping a good candidate list in the middle of that discards
+   the information the node was about to act on and slows convergence instead
+   of helping it. Both are now longer than the worst-case backoff ladder. */
+#define MESH_ISOLATION_HEAL_TICKS  pdMS_TO_TICKS(180000)
 #define MESH_MIN_HEALTHY_LINKS     1U
-#define MESH_DEGRADED_HEAL_TICKS   pdMS_TO_TICKS(120000)
+#define MESH_DEGRADED_HEAL_TICKS   pdMS_TO_TICKS(300000)
 
 typedef struct {
     BLE_GAP_Addr_T addr;
@@ -574,9 +595,21 @@ void APP_WLS_BLE_DeviceConnected(BLE_GAP_EvtConnect_T  *p_evtConnect)
     else
         role = CONN_ROLE_PERIPHERAL;
 
-    if (!CONN_MGR_AddConnection(p_evtConnect->connHandle, role))
+    /* Classify the peer before it has said anything. This node only ever
+       initiates towards a DIMMER_xx it has seen advertising, so a central link
+       is always a mesh link; an incoming link is a mesh child if its address is
+       already in the discovery table and is assumed to be the phone/GUI
+       otherwise. The guess is corrected by the first packet either way (JOIN
+       retypes it LOCAL, an app frame retypes it PHONE) - it only has to hold
+       long enough to keep a peripheral slot free for the app and to keep an
+       idle app link out of the mesh discovery gate. */
+    bool meshPeer = (role == CONN_ROLE_CENTRAL) ||
+        (mesh_FindPeerByAddress(&p_evtConnect->remoteAddr) >= 0);
+
+    if (!CONN_MGR_AddConnection(p_evtConnect->connHandle, role, meshPeer))
     {
-        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "AddConn FULL hdl=0x%04X\r\n", p_evtConnect->connHandle);
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "AddConn FULL hdl=0x%04X mesh=%d\r\n",
+            p_evtConnect->connHandle, (int)meshPeer);
         BLE_GAP_Disconnect(p_evtConnect->connHandle, 0x13);
         return;
     }
@@ -649,6 +682,14 @@ void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
     uint8_t lostNodeId = (lost != NULL) ? lost->peerNodeId : 0U;
     uint32_t lifetime = (lost != NULL) ?
         (xTaskGetTickCount() - lost->createdTick) : 0U;
+    /* Only the loss of a mesh link is a reason to go looking for a new one.
+       The app connecting and disconnecting used to force an immediate
+       discovery scan every time, and a 20% duty scan window is radio time
+       taken from every live connection event - which is how the next app link
+       died of supervision timeout (reason 0x08), forcing another scan. */
+    bool lostMeshLink = (lost != NULL) &&
+        (lost->type == CONN_TYPE_LOCAL || lost->type == CONN_TYPE_GATEWAY ||
+         (lost->meshPeer && lost->type != CONN_TYPE_PHONE));
     /* A peripheral or another established link may disconnect while an
        outgoing create/cancel procedure is pending.  Its disconnect event is
        unrelated and must not release the controller gate. */
@@ -659,6 +700,11 @@ void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
         else
             APP_BLE_MarkPeerUnstable(lostNodeId);
     }
+    /* Drops the routing state that still points at this handle. Without it
+       s_lastPhoneConnHandle outlives the app link and status responses keep
+       being written to a dead handle - or worse, to whatever mesh child the
+       controller later reuses that handle for. */
+    MESH_OnConnectionClosed(p_evtDisconnect->connHandle);
     CONN_MGR_RemoveConnection(p_evtDisconnect->connHandle);
     /* A simultaneous reciprocal connection may have just been removed. Do
        not declare the parent lost when the surviving link reaches the same
@@ -666,12 +712,16 @@ void APP_WLS_BLE_DeviceDisconnected(BLE_GAP_EvtDisconnect_T *p_evtDisconnect)
     if (lostNodeId == 0U || !CONN_MGR_IsConnectedToPeer(lostNodeId))
         MESH_OnLinkLost(lostNodeId);
     MESH_TopologyChanged();
-    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Disconnected hdl=0x%04X reason=0x%02X\r\n",
-        p_evtDisconnect->connHandle, p_evtDisconnect->reason);
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Disconnected hdl=0x%04X reason=0x%02X %s\r\n",
+        p_evtDisconnect->connHandle, p_evtDisconnect->reason,
+        lostMeshLink ? "mesh" : "app");
 
     BLE_GAP_SetAdvEnable(0x01, 0x00);
-    s_repairRequested = true;
-    s_lastScanTick = 0U;
+    if (lostMeshLink)
+    {
+        s_repairRequested = true;
+        s_lastScanTick = 0U;
+    }
 }
 /*******************************************************************************
   Function:

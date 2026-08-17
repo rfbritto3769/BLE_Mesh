@@ -23,13 +23,26 @@
 #define MESH_BROADCAST_ADDR     0xFF
 #define MESH_CLUSTER_ADDR_BASE  0xC0
 #define MESH_CLUSTER_ADDR_MAX   0xC9
-#define MESH_MAX_TTL            12
+/* Bounds the flood radius, so it has to cover the diameter of the connection
+   graph, not the depth of the tree - mesh_ForwardAll floods over every link,
+   cross-links included. 100 nodes with four children each is four levels deep,
+   so leaf to leaf is eight hops, and 12 left no margin at all for a tree that
+   grew unbalanced. Above the diameter a larger TTL costs nothing: it is the
+   duplicate cache, not the TTL, that stops a packet being forwarded twice. A
+   physically linear layout is the exception - there the chain length is the
+   diameter and this has to exceed it. */
+#define MESH_MAX_TTL            32
 #define MESH_HEADER_SIZE        5
 /* Replay window kept per source node, in packets. A single shared FIFO does
    not work here: one chatty neighbour evicts every other source's history, so
    the effective dedup window collapses to well under a second under load and
-   delayed copies get re-executed and re-flooded. */
-#define MESH_DUP_WINDOW         32U
+   delayed copies get re-executed and re-flooded.
+   The window also has to span the worst-case forwarding delay, or a late copy
+   falls outside it and is re-executed and re-flooded anyway. A slider burst
+   re-stamps ~20 sequence numbers a second, so 32 covered only 1.6 s - too
+   little once a packet can cross eight hops. 64 is the ceiling for both the
+   uint64_t bitmap and the int8_t sequence arithmetic in mesh_IsDuplicate. */
+#define MESH_DUP_WINDOW         64U
 #define MESH_MAX_PACKET_SIZE    20
 
 typedef struct __attribute__((packed)) {
@@ -43,7 +56,7 @@ typedef struct __attribute__((packed)) {
 /* Anti-replay state for one source node: the highest sequence number seen and
    a bitmap of the MESH_DUP_WINDOW sequence numbers below it. */
 typedef struct {
-    uint32_t window;
+    uint64_t window;
     uint32_t tickStamp;
     uint8_t  lastSeq;
     bool     valid;
@@ -56,9 +69,15 @@ void MESH_SendClusterCommand(uint8_t clusterId, uint8_t cmd, uint8_t *payload, u
 void MESH_Maintenance(void);
 void MESH_SendHello(uint16_t connHandle);
 void MESH_OnLinkLost(uint8_t peerNodeId);
+void MESH_OnConnectionClosed(uint16_t connHandle);
 void MESH_TopologyChanged(void);
 uint8_t MESH_GetRootId(void);
 uint8_t MESH_GetDepth(void);
 uint8_t MESH_GetNodeId(void);
+/* True once every mesh link of this node is up and admitted and it has a place
+   in the tree, held stable for MESH_FORMED_STABLE_TICKS. Announced on the
+   console as "*** MESH FORMED ***" and as bit 0x04 of the advertised flags. */
+bool MESH_IsNetworkFormed(void);
+uint8_t MESH_GetSubtreeNodeCount(void);
 
 #endif

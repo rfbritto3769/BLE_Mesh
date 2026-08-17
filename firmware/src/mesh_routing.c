@@ -23,8 +23,18 @@ static MeshDupEntry_T s_dupCache[NODE_ID_MAX + 1];
 
 static uint16_t s_lastPhoneConnHandle = 0xFFFF;
 
-#define MESH_TX_QUEUE_SIZE       8U
-#define MESH_ACK_TIMEOUT_TICKS   pdMS_TO_TICKS(700)
+/* One slot per unicast command awaiting its ACK. Sized for a burst of
+   individually addressed commands; a scene over 100 nodes is meant to go out
+   as a broadcast or on a cluster address (0xC0..0xC9 covers exactly the ten
+   clusters of ten that NODE_ID_MAX allows), neither of which is tracked here. */
+#define MESH_TX_QUEUE_SIZE       24U
+/* Round-trip budget for the first attempt. The floor on per-hop latency is the
+   MESH_Maintenance period, not the connection interval: a packet that misses
+   its immediate send waits a whole cycle in s_linkTxQueue. At four levels deep
+   an eight-hop round trip is ~2 s even at the 250 ms cycle, so 700 ms expired
+   before the ACK could physically arrive and every command re-flooded the
+   whole network at least once for nothing. */
+#define MESH_ACK_TIMEOUT_TICKS   pdMS_TO_TICKS(2000)
 #define MESH_MAX_RETRIES         3U
 typedef struct {
     bool inUse;
@@ -42,12 +52,19 @@ typedef struct {
     uint32_t nextTick;
 } MeshBroadcastRetry_T;
 static MeshBroadcastRetry_T s_broadcastRetry;
-#define MESH_LINK_TX_QUEUE_SIZE 16U
+/* Shared by every link, so one broadcast fan-out that finds the transports
+   busy can occupy one slot per link at once. With five links and several
+   floods in flight at 100 nodes, 16 overflowed into "TX queue FULL" and
+   silently dropped mesh traffic. */
+#define MESH_LINK_TX_QUEUE_SIZE 32U
 /* A link whose GATT transport never opens (peer has not enabled the CCCD)
    fails every send with MBA_RES_BAD_STATE. Without an age limit its packets
    stay queued for ever and starve every other link out of the shared queue,
    which shows up as "TX queue FULL" and silently dropped mesh traffic. */
-#define MESH_LINK_TX_MAX_AGE_TICKS pdMS_TO_TICKS(5000)
+/* Has to outlast the retry ladder below it: attempts back off 100 ms << n, so
+   six attempts span ~6.3 s and a 5 s age limit was discarding packets that
+   still had tries left. */
+#define MESH_LINK_TX_MAX_AGE_TICKS pdMS_TO_TICKS(8000)
 typedef struct {
     bool inUse;
     uint16_t connHandle;
@@ -68,12 +85,24 @@ static uint32_t s_prngState;
 static bool s_topologyDirty;
 static bool s_fullReportPending;
 static uint8_t s_reportRetryExp;
+/* "Network formed" is a local, conservative judgement: this node has at least
+   one mesh link that is fully usable, no mesh link is still mid-JOIN, and it
+   has a place in the tree. It has to hold continuously for this long before it
+   is announced, so a link that comes up and immediately drops does not produce
+   a FORMED/LOST pair on the console. */
+#define MESH_FORMED_STABLE_TICKS pdMS_TO_TICKS(5000)
+static bool s_networkFormed;
+static uint32_t s_formedSinceTick;
 #define MESH_HEARTBEAT_BASE_MS  30000UL
 #define MESH_HEARTBEAT_JITTER_MS 5000UL
 #define MESH_LINK_DEAD_TICKS     pdMS_TO_TICKS(90000)
 #define MESH_FULL_REPORT_TICKS   pdMS_TO_TICKS(300000)
 #define MESH_REPORT_DEBOUNCE_MS  2000UL
-#define MESH_CHILD_SUMMARY_SIZE  3U
+/* Must not be smaller than MESH_MAX_MESH_CHILDREN: mesh_UpdateChildSummary
+   silently does nothing when it finds no free slot, so at 3 the fourth child
+   of every node was missing from the aggregate that goes up in the topology
+   report - the root could never add up to the real network size. */
+#define MESH_CHILD_SUMMARY_SIZE  MESH_MAX_MESH_CHILDREN
 typedef struct {
     uint8_t nodeId;
     uint8_t nodes;
@@ -126,20 +155,37 @@ static bool mesh_ResolveDuplicatePeerLink(MeshConn_T *current, uint8_t peerId)
     return true;
 }
 
+/* Child slots currently spoken for. Two views of the same thing have to be
+   combined: children that have joined (typed LOCAL) and children that are
+   merely connected but were recognised as mesh nodes at connect time. Counting
+   only the joined ones under-reports during formation, which is what let five
+   children occupy every peripheral slot and left none for the app. */
+static uint8_t mesh_UsedChildSlots(void)
+{
+    uint8_t connected = CONN_MGR_GetMeshChildCount();
+    uint8_t joined = CONN_MGR_GetMeshPeripheralCount();
+    return (joined > connected) ? joined : connected;
+}
+
 /* A scanning peer connects to us as central, so it consumes one of our
    peripheral slots. Advertise the admission capacity actually enforced in the
    JOIN_REQUEST handler, otherwise peers keep connecting to full nodes. */
 static uint8_t mesh_FreeSlots(void)
 {
-    uint8_t used = CONN_MGR_GetMeshPeripheralCount();
+    uint8_t used = mesh_UsedChildSlots();
     return (used < MESH_MAX_MESH_CHILDREN) ?
         (uint8_t)(MESH_MAX_MESH_CHILDREN - used) : 0U;
 }
 
+/* Advertised flags: 0x01 mesh node, 0x02 has a place in the tree, 0x04 network
+   formed. The last one lets the GUI show mesh health from a plain scan, before
+   it connects to anything. */
 static void mesh_UpdateAdvertisement(void)
 {
-    APP_BLE_UpdateTopologyAdvertisement(s_rootId, s_depth, mesh_FreeSlots(),
-        (uint8_t)(0x01U | ((s_parentId != 0U || s_rootId == s_myNodeId) ? 0x02U : 0U)));
+    uint8_t flags = 0x01U;
+    if (s_parentId != 0U || s_rootId == s_myNodeId) flags |= 0x02U;
+    if (s_networkFormed) flags |= 0x04U;
+    APP_BLE_UpdateTopologyAdvertisement(s_rootId, s_depth, mesh_FreeSlots(), flags);
 }
 
 static uint32_t mesh_Random(void)
@@ -260,7 +306,7 @@ static bool mesh_IsDuplicate(uint8_t srcId, uint8_t seqNum)
     diff = (int8_t)(seqNum - e->lastSeq);
     if (diff > 0) return false;                          /* newer than anything seen */
     if (diff <= -(int8_t)MESH_DUP_WINDOW) return false;  /* older than the window */
-    return (e->window & (1UL << (uint8_t)(-diff))) != 0U;
+    return (e->window & (1ULL << (uint8_t)(-diff))) != 0ULL;
 }
 
 static void mesh_AddToDupCache(uint8_t srcId, uint8_t seqNum)
@@ -275,7 +321,7 @@ static void mesh_AddToDupCache(uint8_t srcId, uint8_t seqNum)
     {
         e->valid = true;
         e->lastSeq = seqNum;
-        e->window = 1UL;      /* bit 0 tracks lastSeq itself */
+        e->window = 1ULL;      /* bit 0 tracks lastSeq itself */
         e->tickStamp = now;
         return;
     }
@@ -284,12 +330,12 @@ static void mesh_AddToDupCache(uint8_t srcId, uint8_t seqNum)
     if (diff > 0)
     {
         e->window = (diff >= (int8_t)MESH_DUP_WINDOW) ?
-            1UL : ((e->window << (uint8_t)diff) | 1UL);
+            1ULL : ((e->window << (uint8_t)diff) | 1ULL);
         e->lastSeq = seqNum;
     }
     else if (diff > -(int8_t)MESH_DUP_WINDOW)
     {
-        e->window |= (1UL << (uint8_t)(-diff));
+        e->window |= (1ULL << (uint8_t)(-diff));
     }
     else
     {
@@ -298,7 +344,7 @@ static void mesh_AddToDupCache(uint8_t srcId, uint8_t seqNum)
            way the stored history no longer orders against this packet, so
            resync onto it. Without this the entry stays pinned to a stale
            lastSeq and stops detecting duplicates altogether. */
-        e->window = 1UL;
+        e->window = 1ULL;
         e->lastSeq = seqNum;
     }
     e->tickStamp = now;
@@ -496,7 +542,7 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                    that disconnects a healthy, established link.
                    SetType(LOCAL) above already counts this connection. */
                 if (!alreadyAdmitted &&
-                    CONN_MGR_GetMeshPeripheralCount() > MESH_MAX_MESH_CHILDREN)
+                    mesh_UsedChildSlots() > MESH_MAX_MESH_CHILDREN)
                 {
                     uint8_t redirect[2] = { s_rootId, s_parentId };
                     mesh_SendDirect(connHandle, payload[0], MESH_CMD_JOIN_REDIRECT,
@@ -711,6 +757,9 @@ void MESH_Init(uint8_t myNodeId)
     s_topologyDirty = true;
     s_fullReportPending = true;
     s_reportRetryExp = 0U;
+    s_networkFormed = false;
+    s_formedSinceTick = 0U;
+    s_lastPhoneConnHandle = 0xFFFFU;
     memset(s_childSummary, 0, sizeof(s_childSummary));
     mesh_UpdateAdvertisement();
 }
@@ -782,7 +831,8 @@ void MESH_ProcessIncoming(uint16_t connHandle, uint16_t dataLen, uint8_t *p_data
     mesh_ForwardAll(p_data, dataLen, connHandle);
 }
 
-void MESH_SendCommand(uint8_t dstId, uint8_t cmd, uint8_t *payload, uint8_t payloadLen)
+static void mesh_SendCommandTtl(uint8_t dstId, uint8_t cmd, uint8_t *payload,
+    uint8_t payloadLen, uint8_t ttl)
 {
     uint8_t packet[MESH_MAX_PACKET_SIZE];
     MeshHeader_T *pHdr = (MeshHeader_T *)packet;
@@ -794,7 +844,7 @@ void MESH_SendCommand(uint8_t dstId, uint8_t cmd, uint8_t *payload, uint8_t payl
     pHdr->dst_id = dstId;
     pHdr->src_id = s_myNodeId;
     pHdr->seq_num = s_seqNum++;
-    pHdr->ttl = MESH_MAX_TTL;
+    pHdr->ttl = ttl;
     pHdr->cmd = cmd;
 
     if (payload && payloadLen > 0)
@@ -837,6 +887,109 @@ void MESH_SendCommand(uint8_t dstId, uint8_t cmd, uint8_t *payload, uint8_t payl
             s_pendingTx[slot].nextRetryTick = xTaskGetTickCount() + MESH_ACK_TIMEOUT_TICKS;
         }
     }
+}
+
+void MESH_SendCommand(uint8_t dstId, uint8_t cmd, uint8_t *payload, uint8_t payloadLen)
+{
+    mesh_SendCommandTtl(dstId, cmd, payload, payloadLen, MESH_MAX_TTL);
+}
+
+/* This node plus everything reported from below it. Only the root sees the
+   whole network; every other node sees its own subtree, which is still the
+   useful number to print next to its own FORMED line. */
+static uint8_t mesh_SubtreeNodeCount(void)
+{
+    uint8_t i;
+    uint16_t nodes = 1U;
+    for (i = 0U; i < MESH_CHILD_SUMMARY_SIZE; i++)
+    {
+        if (s_childSummary[i].nodeId == 0U) continue;
+        nodes += s_childSummary[i].nodes;
+    }
+    return (nodes > 255U) ? 255U : (uint8_t)nodes;
+}
+
+/* Every mesh link is up and admitted, there is at least one of them, and this
+   node knows where it sits in the tree. A link that is connected but still
+   negotiating fails this deliberately: it is exactly the state where routing
+   silently drops packets, so it must not be reported as a formed network. */
+static bool mesh_LinksSettled(void)
+{
+    uint8_t i;
+    MeshConn_T *table = CONN_MGR_GetTable();
+
+    for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
+    {
+        if (!table[i].inUse || table[i].type == CONN_TYPE_PHONE)
+            continue;
+        /* Either view is enough to make this a mesh link: recognised as one at
+           connect time, or typed LOCAL later by its own JOIN. An idle app link
+           is neither, and must not hold the whole node in "forming". */
+        if (!table[i].meshPeer && table[i].type != CONN_TYPE_LOCAL)
+            continue;
+        if (!table[i].isReady || !table[i].topologyReady)
+            return false;
+    }
+    return (CONN_MGR_GetReadyLocalLinkCount() > 0U) &&
+           (s_parentId != 0U || s_rootId == s_myNodeId);
+}
+
+static void mesh_UpdateNetworkFormed(uint32_t now)
+{
+    if (!mesh_LinksSettled())
+    {
+        s_formedSinceTick = 0U;
+        if (s_networkFormed)
+        {
+            s_networkFormed = false;
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                "*** MESH NOT FORMED *** id=%u links=%u parent=%u root=%u\r\n",
+                s_myNodeId, CONN_MGR_GetReadyLocalLinkCount(), s_parentId,
+                s_rootId);
+            mesh_UpdateAdvertisement();
+        }
+        return;
+    }
+
+    if (s_formedSinceTick == 0U)
+    {
+        s_formedSinceTick = now;
+    }
+    else if (!s_networkFormed &&
+             (now - s_formedSinceTick) >= MESH_FORMED_STABLE_TICKS)
+    {
+        s_networkFormed = true;
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+            "*** MESH FORMED *** id=%u root=%u depth=%u parent=%u links=%u nodes=%u\r\n",
+            s_myNodeId, s_rootId, s_depth, s_parentId,
+            CONN_MGR_GetReadyLocalLinkCount(), mesh_SubtreeNodeCount());
+        mesh_UpdateAdvertisement();
+    }
+}
+
+bool MESH_IsNetworkFormed(void)
+{
+    return s_networkFormed;
+}
+
+uint8_t MESH_GetSubtreeNodeCount(void)
+{
+    return mesh_SubtreeNodeCount();
+}
+
+/* Called when a link is torn down, before it leaves the connection table, so
+   no routing state keeps pointing at a handle the controller is free to hand
+   out again to a completely different peer. */
+void MESH_OnConnectionClosed(uint16_t connHandle)
+{
+    uint8_t i;
+
+    if (s_lastPhoneConnHandle == connHandle)
+        s_lastPhoneConnHandle = 0xFFFFU;
+
+    for (i = 0U; i < MESH_LINK_TX_QUEUE_SIZE; i++)
+        if (s_linkTxQueue[i].inUse && s_linkTxQueue[i].connHandle == connHandle)
+            s_linkTxQueue[i].inUse = false;
 }
 
 void MESH_Maintenance(void)
@@ -1000,9 +1153,10 @@ void MESH_Maintenance(void)
            that says whether it still had links, still had a parent, and what
            it was advertising as free capacity. */
         SYS_DEBUG_PRINT(SYS_ERROR_INFO,
-            "STATUS id=%u links=%u root=%u depth=%u parent=%u free=%u\r\n",
+            "STATUS id=%u links=%u root=%u depth=%u parent=%u free=%u %s\r\n",
             s_myNodeId, CONN_MGR_GetLocalLinkCount(), s_rootId, s_depth,
-            s_parentId, mesh_FreeSlots());
+            s_parentId, mesh_FreeSlots(),
+            s_networkFormed ? "FORMED" : "forming");
     }
 
     if ((now - s_lastFullReportTick) >= MESH_FULL_REPORT_TICKS)
@@ -1055,6 +1209,9 @@ void MESH_Maintenance(void)
             s_nextReportTick = now + pdMS_TO_TICKS(backoffMs);
         }
     }
+
+    /* Last, so it judges the state this cycle actually left behind. */
+    mesh_UpdateNetworkFormed(now);
 }
 
 void MESH_SendClusterCommand(uint8_t clusterId, uint8_t cmd, uint8_t *payload, uint8_t payloadLen)
@@ -1143,8 +1300,15 @@ void MESH_OnLinkLost(uint8_t peerNodeId)
         s_rootId = s_myNodeId;
         s_depth = 0U;
         mesh_UpdateAdvertisement();
-        MESH_SendCommand(MESH_BROADCAST_ADDR, MESH_CMD_REPAIR_REQUEST,
-            &s_myNodeId, 1U);
+        /* Deliberately not a network-wide flood. The receiver does nothing
+           with this beyond refreshing the link's activity timestamp, which
+           MESH_ProcessIncoming already does for any packet, so every hop past
+           the immediate neighbourhood is pure cost. It matters at 100 nodes:
+           losing one node four levels up orphans its whole subtree at once,
+           and each orphan flooding the entire network on the same tick is a
+           broadcast storm at exactly the moment the mesh is already repairing. */
+        mesh_SendCommandTtl(MESH_BROADCAST_ADDR, MESH_CMD_REPAIR_REQUEST,
+            &s_myNodeId, 1U, 2U);
     }
     mesh_MarkTopologyDirty();
 }

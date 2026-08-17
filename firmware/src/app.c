@@ -270,8 +270,12 @@ void APP_Tasks ( void )
         case APP_STATE_SERVICE_TASKS:
         {
             static uint32_t lastMaintenanceTick = 0;
+            static uint32_t lastMeshTick = 0;
+            uint32_t nowTick;
 
-            if (OSAL_QUEUE_Receive(&appData.appQueue, &appMsg, pdMS_TO_TICKS(1000)))
+            /* Bounded well below the mesh cycle below, so an idle node still
+               reaches it on time instead of waking only once a second. */
+            if (OSAL_QUEUE_Receive(&appData.appQueue, &appMsg, pdMS_TO_TICKS(100)))
             {
                 if(p_appMsg->msgId==APP_MSG_BLE_STACK_EVT)
                 {
@@ -290,9 +294,27 @@ void APP_Tasks ( void )
             /* Advertising reports keep the queue busy for the whole discovery
                window. Drive maintenance from the tick counter so scanning,
                joining and retransmission also progress under event load. */
-            if ((xTaskGetTickCount() - lastMaintenanceTick) >= pdMS_TO_TICKS(1000))
+            nowTick = xTaskGetTickCount();
+
+            /* This period is the floor on per-hop forwarding latency for the
+               whole mesh: a packet whose immediate send fails is parked in
+               s_linkTxQueue and only retried here, and at most one reliable
+               retransmission is issued per cycle. At 1 s an eight-hop round
+               trip across a 100 node tree could not fit inside any sane ACK
+               timeout, and queued traffic backed up until it aged out. */
+            if ((nowTick - lastMeshTick) >= pdMS_TO_TICKS(250))
             {
-                lastMaintenanceTick = xTaskGetTickCount();
+                lastMeshTick = nowTick;
+                MESH_Maintenance();
+            }
+
+            /* Discovery and link supervision stay on the slow cycle. They
+               issue HCI commands and walk the candidate list; running them
+               four times as often would add radio and CPU load without
+               converging any faster. */
+            if ((nowTick - lastMaintenanceTick) >= pdMS_TO_TICKS(1000))
+            {
+                lastMaintenanceTick = nowTick;
                 APP_BLE_RescanHandler();
                 APP_BLE_ConnectNextPeer();
                 /* GATT discovery and CCC setup must finish before a link is
@@ -300,7 +322,6 @@ void APP_Tasks ( void )
                    well over 15 s, and sweeping too early kills healthy links
                    (and the GUI link, which is only ready once it subscribes). */
                 CONN_MGR_SweepStale(pdMS_TO_TICKS(30000));
-                MESH_Maintenance();
             }
             break;
         }

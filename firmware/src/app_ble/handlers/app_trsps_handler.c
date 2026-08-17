@@ -83,10 +83,38 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                 if (conn && conn->role == CONN_ROLE_PERIPHERAL)
                 {
                     BLE_GAP_ConnParams_T params;
-                    params.intervalMin = 0x20; /* 40 ms */
-                    params.intervalMax = 0x40; /* 80 ms */
-                    params.latency = 0;
-                    params.supervisionTimeout = 0x07D0; /* 20 s, see central side */
+                    if (conn->meshPeer)
+                    {
+                        params.intervalMin = 0x20; /* 40 ms */
+                        params.intervalMax = 0x40; /* 80 ms */
+                        params.latency = 0;
+                        params.supervisionTimeout = 0x07D0; /* 20 s, see central side */
+                    }
+                    else
+                    {
+                        /* The app/GUI link. Two things killed it with reason
+                         * 0x08 (supervision timeout) under the old values:
+                         *
+                         * - latency 0 means every connection event this node
+                         *   misses counts against the timeout, and it does miss
+                         *   them: up to six links at 40-80 ms, permanent
+                         *   advertising and 6 s scan windows at 20% duty do not
+                         *   all fit in the radio. Peripheral latency makes the
+                         *   skipping legal instead of fatal - at 4 the node only
+                         *   has to be heard once every ~250 ms.
+                         * - a 20 s supervision timeout is outside what phones
+                         *   accept (Apple caps it at 6 s), so the request was
+                         *   simply refused and the link kept whatever short
+                         *   timeout the phone had chosen, with latency 0.
+                         *
+                         * These values satisfy Apple's connection parameter
+                         * rules, so the update is actually applied:
+                         * intervalMax * (latency + 1) * 3 = 750 ms < 5 s. */
+                        params.intervalMin = 0x18;         /* 30 ms */
+                        params.intervalMax = 0x28;         /* 50 ms */
+                        params.latency = 4;
+                        params.supervisionTimeout = 0x01F4; /* 5 s */
+                    }
                     BLE_GAP_UpdateConnParam(hdl, &params);
                 }
             }
