@@ -56,6 +56,16 @@ typedef struct {
     uint8_t heartbeatToken;
     uint8_t heartbeatMisses;
     bool heartbeatAwaitingAck;
+    /* Where this neighbour sits in the tree, as it last reported. Heartbeats
+       already carry root, depth and free slots on every link; keeping them
+       lets a node judge its own placement against every peer it is already
+       talking to, with no scan and no extra traffic. peerInfoTick is 0 until
+       the first report arrives - a peer of unknown depth must never be
+       treated as an improvement. */
+    uint8_t peerRootId;
+    uint8_t peerDepth;
+    uint8_t peerFreeSlots;
+    uint32_t peerInfoTick;
 } MeshConn_T;
 
 void CONN_MGR_Init(void);
@@ -65,6 +75,14 @@ void CONN_MGR_SetPeerNodeId(uint16_t connHandle, uint8_t nodeId);
 void CONN_MGR_SetReady(uint16_t connHandle);
 void CONN_MGR_SetTopologyReady(uint16_t connHandle);
 void CONN_MGR_SetType(uint16_t connHandle, ConnType_T type);
+/* Promotes a link to "known mesh node" once the peer has identified itself.
+   The connect-time guess cannot be trusted on a node that already stopped
+   scanning: it never heard the newcomer advertise. */
+void CONN_MGR_SetMeshPeer(uint16_t connHandle, bool meshPeer);
+/* Records a neighbour's own view of its place in the tree. freeSlots is
+   passed as 0xFF when the carrying message does not include it. */
+void CONN_MGR_SetPeerTopology(uint16_t connHandle, uint8_t rootId,
+    uint8_t depth, uint8_t freeSlots);
 MeshConn_T* CONN_MGR_GetByHandle(uint16_t connHandle);
 uint8_t CONN_MGR_GetCentralCount(void);
 uint8_t CONN_MGR_GetPeripheralCount(void);

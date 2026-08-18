@@ -79,5 +79,11 @@ uint8_t MESH_GetNodeId(void);
    console as "*** MESH FORMED ***" and as bit 0x04 of the advertised flags. */
 bool MESH_IsNetworkFormed(void);
 uint8_t MESH_GetSubtreeNodeCount(void);
+/* Tree rebalancing. WantsRebalance is true while this node sits deep enough
+   that a better parent is worth a scan; WouldImproveDepth decides whether a
+   specific candidate is actually an improvement, including the hysteresis
+   that stops two comparable parents trading a node back and forth. */
+bool MESH_WantsRebalance(void);
+bool MESH_WouldImproveDepth(uint8_t peerRootId, uint8_t peerDepth);
 
 #endif

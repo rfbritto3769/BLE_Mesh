@@ -3,6 +3,7 @@
 #include "osal/osal_freertos.h"
 #include "mesh_routing.h"
 #include "mesh_conn_mgr.h"
+#include "app_ble_callbacks.h"
 #include "node_config.h"
 #include "led_dimmer.h"
 #include "definitions.h"
@@ -79,44 +80,9 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                 CONN_MGR_SetReady(hdl);
                 SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TRSPS TX ready hdl=0x%04X\r\n", hdl);
 
-                MeshConn_T *conn = CONN_MGR_GetByHandle(hdl);
-                if (conn && conn->role == CONN_ROLE_PERIPHERAL)
-                {
-                    BLE_GAP_ConnParams_T params;
-                    if (conn->meshPeer)
-                    {
-                        params.intervalMin = 0x20; /* 40 ms */
-                        params.intervalMax = 0x40; /* 80 ms */
-                        params.latency = 0;
-                        params.supervisionTimeout = 0x07D0; /* 20 s, see central side */
-                    }
-                    else
-                    {
-                        /* The app/GUI link. Two things killed it with reason
-                         * 0x08 (supervision timeout) under the old values:
-                         *
-                         * - latency 0 means every connection event this node
-                         *   misses counts against the timeout, and it does miss
-                         *   them: up to six links at 40-80 ms, permanent
-                         *   advertising and 6 s scan windows at 20% duty do not
-                         *   all fit in the radio. Peripheral latency makes the
-                         *   skipping legal instead of fatal - at 4 the node only
-                         *   has to be heard once every ~250 ms.
-                         * - a 20 s supervision timeout is outside what phones
-                         *   accept (Apple caps it at 6 s), so the request was
-                         *   simply refused and the link kept whatever short
-                         *   timeout the phone had chosen, with latency 0.
-                         *
-                         * These values satisfy Apple's connection parameter
-                         * rules, so the update is actually applied:
-                         * intervalMax * (latency + 1) * 3 = 750 ms < 5 s. */
-                        params.intervalMin = 0x18;         /* 30 ms */
-                        params.intervalMax = 0x28;         /* 50 ms */
-                        params.latency = 4;
-                        params.supervisionTimeout = 0x01F4; /* 5 s */
-                    }
-                    BLE_GAP_UpdateConnParam(hdl, &params);
-                }
+                /* Mesh profile until the peer proves it is the app. See
+                   APP_BLE_ApplyLinkConnParams for why the default matters. */
+                APP_BLE_ApplyLinkConnParams(hdl);
             }
         }
         break;
@@ -164,7 +130,16 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                 if (!isAsciiHex && dataLen >= 5)
                 {
                     if (conn && rawBuf[1] == NODE_ID_PHONE)
+                    {
+                        /* First positive proof that this is the app, so the
+                           link may now take the app connection parameters.
+                           conn points into the table, so the previous type has
+                           to be sampled before SetType overwrites it. */
+                        bool wasPhone = (conn->type == CONN_TYPE_PHONE);
                         CONN_MGR_SetType(hdl, CONN_TYPE_PHONE);
+                        if (!wasPhone)
+                            APP_BLE_ApplyLinkConnParams(hdl);
+                    }
                     else if (conn && conn->type != CONN_TYPE_LOCAL)
                         CONN_MGR_SetType(hdl, CONN_TYPE_LOCAL);
                     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "BIN dst=%02X cmd=%02X\r\n",
@@ -174,7 +149,10 @@ void APP_TrspsEvtHandler(BLE_TRSPS_Event_T *p_event)
                 else if (isAsciiHex)
                 {
                     if (conn && conn->type != CONN_TYPE_PHONE)
+                    {
                         CONN_MGR_SetType(hdl, CONN_TYPE_PHONE);
+                        APP_BLE_ApplyLinkConnParams(hdl);
+                    }
                     binLen = parseHexString(rawBuf, dataLen, binBuf, sizeof(binBuf));
                     SYS_DEBUG_PRINT(SYS_ERROR_INFO, "HEX parsed %d B\r\n", (int)binLen);
                     if (binLen >= 5)

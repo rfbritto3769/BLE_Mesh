@@ -507,6 +507,58 @@ static void mesh_ConfirmAck(const uint8_t *payload, uint8_t payloadLen)
     }
 }
 
+/* A JOIN or HELLO is the peer stating it is a mesh node, and it is the only
+   evidence that survives a staggered power-up: a node whose mesh has already
+   formed has stopped scanning, so a newcomer's address is not in its discovery
+   table and the connect-time guess classified the link as the phone. Left
+   uncorrected, the link kept the app connection parameters - peripheral
+   latency 4 and a 5 s supervision timeout - and dropped with reason 0x08 until
+   the newcomer had backed itself off out of the network. */
+static void mesh_ConfirmMeshLink(uint16_t connHandle)
+{
+    MeshConn_T *conn = CONN_MGR_GetByHandle(connHandle);
+    if (conn == NULL || conn->meshPeer)
+        return;
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Late peer on hdl=0x%04X, reclassifying\r\n",
+        connHandle);
+    CONN_MGR_SetMeshPeer(connHandle, true);
+    APP_BLE_ApplyLinkConnParams(connHandle);
+}
+
+/* A joiner carrying a lower node id than ours is not a child - it is a better
+   parent that happens to have reached us first. Adopt it over the link that
+   already exists.
+ *
+ * This is what removes the commissioning-order constraint. Edges are created
+ * by whoever is scanning, so a node powered up after its neighbours can only
+ * reach them upwards, and the old rule (adopt a parent only on a link we
+ * opened as central) left it permanently rootless: the mesh ended up with one
+ * root per commissioning step. Nothing in the routing requires the parent to
+ * be the central side - mesh_TrySendToConn picks TRSPC or TRSPS from the role,
+ * and mesh_FindParentConnection matches on peer id - so the tree can reorder
+ * logically, with no disconnect and no role swap.
+ *
+ * Cycle safety is unchanged: the parent is still always a strictly lower node
+ * id, so the parent chain cannot close on itself. The payload is the JOIN
+ * body: joiner id, its root, its depth. */
+static bool mesh_AdoptJoinerAsParent(const uint8_t *payload)
+{
+    if (payload[0] >= s_myNodeId)
+        return false;
+    if (payload[1] >= s_rootId && s_parentId != 0U)
+        return false;
+
+    s_parentId = payload[0];
+    s_rootId = payload[1];
+    s_depth = (payload[2] < 0xFEU) ? (uint8_t)(payload[2] + 1U) : 0xFFU;
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+        "Adopted DIMMER_%02d as parent (uplink) root=%u depth=%u\r\n",
+        s_parentId, s_rootId, s_depth);
+    mesh_UpdateAdvertisement();
+    mesh_MarkTopologyDirty();
+    return true;
+}
+
 static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t payloadLen, uint16_t connHandle)
 {
     switch (pHdr->cmd)
@@ -517,6 +569,7 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                 MeshConn_T *helloConn = CONN_MGR_GetByHandle(connHandle);
                 CONN_MGR_SetPeerNodeId(connHandle, payload[0]);
                 CONN_MGR_SetType(connHandle, CONN_TYPE_LOCAL);
+                mesh_ConfirmMeshLink(connHandle);
                 CONN_MGR_SetReady(connHandle);
                 if (!mesh_ResolveDuplicatePeerLink(helloConn, payload[0]))
                     break;
@@ -532,16 +585,24 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                 bool alreadyAdmitted = (joiner != NULL) && joiner->topologyReady;
                 CONN_MGR_SetPeerNodeId(connHandle, payload[0]);
                 CONN_MGR_SetType(connHandle, CONN_TYPE_LOCAL);
+                mesh_ConfirmMeshLink(connHandle);
                 CONN_MGR_SetReady(connHandle);
                 if (!mesh_ResolveDuplicatePeerLink(joiner, payload[0]))
                     break;
+                /* Decided before the quota check on purpose: an uplink is not
+                   a child, so a full node must still accept a lower id that
+                   improves its place in the tree. Refusing it would recreate
+                   the very partition this is here to prevent. */
+                CONN_MGR_SetPeerTopology(connHandle, payload[1], payload[2],
+                    0xFFU);
+                bool asUplink = mesh_AdoptJoinerAsParent(payload);
                 /* Admission is decided once. A repeated JOIN on a child that
                    is already in the tree (its JOIN_ACCEPT was lost, or its
                    stack re-raised the event) must not be re-evaluated: by then
                    this node may be full, and the answer would be a redirect
                    that disconnects a healthy, established link.
                    SetType(LOCAL) above already counts this connection. */
-                if (!alreadyAdmitted &&
+                if (!alreadyAdmitted && !asUplink &&
                     mesh_UsedChildSlots() > MESH_MAX_MESH_CHILDREN)
                 {
                     uint8_t redirect[2] = { s_rootId, s_parentId };
@@ -576,6 +637,8 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
                     CONN_MGR_SetType(connHandle, CONN_TYPE_LOCAL);
                     CONN_MGR_SetReady(connHandle);
                     CONN_MGR_SetTopologyReady(connHandle);
+                    CONN_MGR_SetPeerTopology(connHandle, payload[0], payload[1],
+                        (payloadLen >= 3U) ? payload[2] : 0xFFU);
                 }
                 /* Adopt as parent only towards a lower node id, the same rule
                    MESH_SendHello applies. The parent relation must be strictly
@@ -598,6 +661,9 @@ static void mesh_ExecuteCommand(MeshHeader_T *pHdr, uint8_t *payload, uint8_t pa
 
         case MESH_CMD_HEARTBEAT:
             CONN_MGR_Touch(connHandle);
+            if (payloadLen >= 3U)
+                CONN_MGR_SetPeerTopology(connHandle, payload[0], payload[1],
+                    payload[2]);
             /* Echo the per-link token on the same physical connection. This
                proves both application directions are alive; a BLE connection
                event alone cannot detect a stalled TRSP/CBFC data path. */
@@ -893,6 +959,147 @@ void MESH_SendCommand(uint8_t dstId, uint8_t cmd, uint8_t *payload, uint8_t payl
 {
     mesh_SendCommandTtl(dstId, cmd, payload, payloadLen, MESH_MAX_TTL);
 }
+
+/* ------------------------------------------------------------------ *
+ * Tree rebalancing
+ *
+ * Edges are created by whoever happens to be scanning, so the shape of the
+ * tree records the commissioning order rather than the radio topology. The
+ * pathological case is strictly descending commissioning: every node powers up
+ * as the lowest id so far, attaches to the current root, and immediately
+ * becomes the new root - producing a chain of depth N-1 instead of a four-ary
+ * tree of depth 4.
+ *
+ * Three mechanisms, in increasing order of cost:
+ *
+ *   1. Re-parent over a link that already exists. Free: no scan, no new
+ *      connection, no teardown. Uses the root/depth every heartbeat already
+ *      carries.
+ *   2. Scan and connect to a better parent, when the single uplink slot is
+ *      free. Costs one scan window.
+ *   3. Release an uplink slot held by a link that is no longer a tree edge
+ *      below us, so mechanism 2 can run. This is what lets a chain unwind.
+ *
+ * What makes all of this safe is the invariant that a parent is always a
+ * strictly lower node id: the parent graph cannot close a loop no matter what
+ * the rebalancer decides, so the worst outcome is a suboptimal depth, never a
+ * partitioned or looping network. MESH_REBALANCE_MIN_GAIN is the hysteresis
+ * that keeps two comparable parents from trading a node back and forth.
+ * ------------------------------------------------------------------ */
+#define MESH_REBALANCE_ENABLE       1
+/* Below this depth the tree is already good enough to leave alone. */
+#define MESH_REBALANCE_MIN_DEPTH    3U
+/* Levels a candidate must beat the current parent by before we move. */
+#define MESH_REBALANCE_MIN_GAIN     2U
+#define MESH_REBALANCE_INFO_MAX_AGE pdMS_TO_TICKS(120000)
+
+/* True when taking a parent at (root, depth) would put this node meaningfully
+   higher in the tree than it sits now. Shared with the connection logic so a
+   rebalance scan does not spend the uplink slot on a peer that gains nothing. */
+bool MESH_WouldImproveDepth(uint8_t peerRootId, uint8_t peerDepth)
+{
+    if (peerDepth == 0xFFU)
+        return false;
+    if (peerRootId < s_rootId)
+        return true;                       /* a better root always wins */
+    if (peerRootId > s_rootId)
+        return false;
+    if (s_parentId == 0U)
+        return true;                       /* no parent: anything is better */
+    return ((uint16_t)peerDepth + 1U + MESH_REBALANCE_MIN_GAIN) <=
+           (uint16_t)s_depth;
+}
+
+bool MESH_WantsRebalance(void)
+{
+#if MESH_REBALANCE_ENABLE
+    return (s_depth >= MESH_REBALANCE_MIN_DEPTH) && (s_depth != 0xFFU);
+#else
+    return false;
+#endif
+}
+
+#if MESH_REBALANCE_ENABLE
+/* Mechanism 1. Walks the links this node already holds and moves the parent
+   pointer to the best of them. Nothing is connected or disconnected. */
+static void mesh_RebalanceOverExistingLinks(uint32_t now)
+{
+    MeshConn_T *table = CONN_MGR_GetTable();
+    MeshConn_T *best = NULL;
+    uint8_t i;
+
+    for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
+    {
+        MeshConn_T *c = &table[i];
+        if (!c->inUse || c->type != CONN_TYPE_LOCAL || !c->isReady ||
+            !c->topologyReady || c->peerNodeId == 0U)
+            continue;
+        /* The invariant that keeps the parent graph acyclic. */
+        if (c->peerNodeId >= s_myNodeId)
+            continue;
+        if (c->peerInfoTick == 0U ||
+            (now - c->peerInfoTick) >= MESH_REBALANCE_INFO_MAX_AGE)
+            continue;                       /* stale or never reported */
+        if (c->peerDepth == 0xFFU)
+            continue;
+        if (best == NULL || c->peerRootId < best->peerRootId ||
+            (c->peerRootId == best->peerRootId && c->peerDepth < best->peerDepth))
+            best = c;
+    }
+
+    if (best == NULL || best->peerNodeId == s_parentId)
+        return;
+    if (!MESH_WouldImproveDepth(best->peerRootId, best->peerDepth))
+        return;
+
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+        "Rebalance: parent %u -> %u, depth %u -> %u\r\n",
+        s_parentId, best->peerNodeId, s_depth, best->peerDepth + 1U);
+    s_parentId = best->peerNodeId;
+    s_rootId = best->peerRootId;
+    s_depth = (best->peerDepth < 0xFEU) ?
+        (uint8_t)(best->peerDepth + 1U) : 0xFFU;
+    mesh_UpdateAdvertisement();
+    mesh_MarkTopologyDirty();
+}
+
+/* Mechanism 3. The single uplink slot is spent on a link this node opened as
+   central. If the peer on it reports a depth no deeper than our own, it is not
+   below us in the tree any more - it found a shorter path - so the link is not
+   carrying our subtree and the slot is better spent looking for a parent.
+   Only ever released while another usable mesh link remains, so the node
+   cannot isolate itself doing this. */
+static void mesh_ReleaseRedundantUplink(uint32_t now)
+{
+    MeshConn_T *table = CONN_MGR_GetTable();
+    uint8_t i;
+
+    if (!MESH_WantsRebalance() || CONN_MGR_GetReadyLocalLinkCount() < 2U)
+        return;
+
+    for (i = 0U; i < MESH_MAX_CONNECTIONS; i++)
+    {
+        MeshConn_T *c = &table[i];
+        if (!c->inUse || c->role != CONN_ROLE_CENTRAL ||
+            c->type != CONN_TYPE_LOCAL || c->peerNodeId == 0U)
+            continue;
+        if (c->peerNodeId == s_parentId)
+            continue;                       /* this one is our uplink */
+        if (c->peerInfoTick == 0U ||
+            (now - c->peerInfoTick) >= MESH_REBALANCE_INFO_MAX_AGE)
+            continue;
+        if (c->peerDepth == 0xFFU || c->peerDepth > s_depth)
+            continue;                       /* still below us: keep it */
+
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+            "Rebalance: releasing uplink slot held by DIMMER_%02d "
+            "(its depth %u <= ours %u)\r\n",
+            c->peerNodeId, c->peerDepth, s_depth);
+        (void)BLE_GAP_Disconnect(c->connHandle, 0x13);
+        return;
+    }
+}
+#endif /* MESH_REBALANCE_ENABLE */
 
 /* This node plus everything reported from below it. Only the root sees the
    whole network; every other node sees its own subtree, which is still the
@@ -1209,6 +1416,13 @@ void MESH_Maintenance(void)
             s_nextReportTick = now + pdMS_TO_TICKS(backoffMs);
         }
     }
+
+#if MESH_REBALANCE_ENABLE
+    /* Cheap first: moving the parent pointer onto a link that already exists
+       costs nothing, and often removes the need to release anything. */
+    mesh_RebalanceOverExistingLinks(now);
+    mesh_ReleaseRedundantUplink(now);
+#endif
 
     /* Last, so it judges the state this cycle actually left behind. */
     mesh_UpdateNetworkFormed(now);

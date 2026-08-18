@@ -91,6 +91,10 @@ void APP_WLS_BLE_PairedDeviceConnected(BLE_DM_Event_T *p_event);
 void APP_BLE_RescanHandler(void);
 void APP_BLE_ConnectNextPeer(void);
 bool APP_BLE_StartScan(void);
+/* Re-evaluates and applies the connection parameters of an incoming link.
+   Safe to call repeatedly; call it whenever the peer's classification
+   changes. */
+void APP_BLE_ApplyLinkConnParams(uint16_t connHandle);
 bool APP_BLE_IsNodeIdObserved(uint8_t nodeId);
 void APP_BLE_MarkPeerRejected(uint8_t nodeId);
 void APP_BLE_MarkPeerDisconnected(uint8_t nodeId);

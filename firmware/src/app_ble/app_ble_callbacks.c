@@ -140,6 +140,14 @@ static bool s_connectCancelPending = false;
 static uint32_t s_lastLinkedTick = 0;
 static uint32_t s_degradedSinceTick = 0;
 static bool s_repairRequested = false;
+/* The current scan is looking for a better parent rather than for a first
+   link, so candidates are filtered on depth gain. */
+static bool s_rebalanceScan = false;
+static uint32_t s_lastRebalanceTick = 0;
+/* Deliberately long. A rebalance is an optimisation, never a repair, so it
+   must never compete with discovery for radio: one scan window every few
+   minutes unwinds a chain in a handful of steps and costs almost nothing. */
+#define MESH_REBALANCE_PERIOD_TICKS pdMS_TO_TICKS(150000)
 /* Last resort for a node that no lower id will take: see the comment in
    APP_BLE_ConnectNextPeer. */
 static bool s_allowUpwardLink = false;
@@ -193,6 +201,47 @@ void APP_BLE_MarkPeerRejected(uint8_t nodeId)
 void APP_BLE_MarkPeerUnstable(uint8_t nodeId)
 {
     mesh_BackoffPeer(nodeId);
+}
+
+/* Single decision point for the connection parameters of an incoming link.
+   Called when the transport opens and again every time the peer's identity
+   becomes better known, because the classification is not reliable at connect
+   time: a node whose mesh is already formed has stopped scanning, so a
+   newcomer's address is absent from the discovery table and the link looks
+   like the phone.
+ *
+ * The default is deliberately the mesh profile. Being wrong towards mesh only
+ * costs radio efficiency - a longer supervision timeout never kills a link.
+ * Being wrong towards the app puts a 5 s timeout and peripheral latency on a
+ * mesh link, which is exactly what made late-joining nodes drop with reason
+ * 0x08 and then back themselves off out of the network. So the app profile is
+ * applied only on positive identification (CONN_TYPE_PHONE), never on a
+ * guess. */
+void APP_BLE_ApplyLinkConnParams(uint16_t connHandle)
+{
+    MeshConn_T *conn = CONN_MGR_GetByHandle(connHandle);
+    BLE_GAP_ConnParams_T params;
+
+    if (conn == NULL || conn->role != CONN_ROLE_PERIPHERAL)
+        return;
+
+    if (conn->type == CONN_TYPE_PHONE && !conn->meshPeer)
+    {
+        /* Apple's rules, so the update is actually applied:
+           intervalMax * (latency + 1) * 3 = 750 ms < 5 s. */
+        params.intervalMin = 0x18;          /* 30 ms */
+        params.intervalMax = 0x28;          /* 50 ms */
+        params.latency = 4;
+        params.supervisionTimeout = 0x01F4; /* 5 s */
+    }
+    else
+    {
+        params.intervalMin = 0x20;          /* 40 ms */
+        params.intervalMax = 0x40;          /* 80 ms */
+        params.latency = 0;
+        params.supervisionTimeout = 0x07D0; /* 20 s, see the central side */
+    }
+    (void)BLE_GAP_UpdateConnParam(connHandle, &params);
 }
 
 bool APP_BLE_StartScan(void)
@@ -320,6 +369,16 @@ void APP_BLE_ConnectNextPeer(void)
         }
         if (CONN_MGR_IsConnectedToPeer(peer->nodeId))
             continue;
+        /* Already in the tree and only looking for a better parent: spend the
+           single uplink slot on a candidate that is actually an improvement,
+           not on the first lower id that happens to have a slot free. Without
+           this the rebalance scan would just re-attach at the same depth. */
+        if (s_rebalanceScan && !MESH_WouldImproveDepth(peer->rootId, peer->depth))
+        {
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Skip DIMMER_%02d: no depth gain\r\n",
+                peer->nodeId);
+            continue;
+        }
 
         BLE_GAP_CreateConnParams_T params;
         params.scanInterval = APP_BLE_CREATE_CONN_SCAN_INTERVAL;
@@ -499,12 +558,36 @@ void APP_BLE_RescanHandler(void)
     {
         s_connectIndex = 0U;
         s_allowUpwardLink = false; /* each scan retries downward first */
+        s_rebalanceScan = false;
         mesh_SortCandidates();
         if (APP_BLE_StartScan())
         {
             s_repairRequested = false;
             s_lastScanTick = now;
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Periodic topology scan\r\n");
+        }
+    }
+    /* Rebalance scan. Strictly lower priority than the repair scan above: it
+       only runs when the node is already linked and idle, has its uplink slot
+       free, and sits deep enough for a better parent to be worth the radio.
+       s_rebalanceScan makes the candidate filter require a real depth gain. */
+    else if (!s_scanActive && s_pendingPeerNodeId == 0U &&
+             !s_connectCancelPending &&
+             !CONN_MGR_HasUnreadyMeshLink() &&
+             CONN_MGR_GetCentralCount() < MESH_MAX_CENTRAL &&
+             MESH_WantsRebalance() &&
+             (now - s_lastRebalanceTick) >= MESH_REBALANCE_PERIOD_TICKS)
+    {
+        s_lastRebalanceTick = now;
+        s_connectIndex = 0U;
+        s_allowUpwardLink = false; /* a parent is always a lower id */
+        mesh_SortCandidates();
+        if (APP_BLE_StartScan())
+        {
+            s_rebalanceScan = true;
+            s_lastScanTick = now;
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Rebalance scan, depth=%u\r\n",
+                MESH_GetDepth());
         }
     }
 }

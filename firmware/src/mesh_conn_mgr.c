@@ -121,6 +121,23 @@ void CONN_MGR_SetType(uint16_t connHandle, ConnType_T type)
     if (p) p->type = type;
 }
 
+void CONN_MGR_SetMeshPeer(uint16_t connHandle, bool meshPeer)
+{
+    MeshConn_T *p = CONN_MGR_GetByHandle(connHandle);
+    if (p) p->meshPeer = meshPeer;
+}
+
+void CONN_MGR_SetPeerTopology(uint16_t connHandle, uint8_t rootId,
+    uint8_t depth, uint8_t freeSlots)
+{
+    MeshConn_T *p = CONN_MGR_GetByHandle(connHandle);
+    if (p == NULL) return;
+    p->peerRootId = rootId;
+    p->peerDepth = depth;
+    if (freeSlots != 0xFFU) p->peerFreeSlots = freeSlots;
+    p->peerInfoTick = xTaskGetTickCount();
+}
+
 MeshConn_T* CONN_MGR_GetByHandle(uint16_t connHandle)
 {
     uint8_t i;
