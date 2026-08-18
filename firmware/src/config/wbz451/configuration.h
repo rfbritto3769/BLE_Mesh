@@ -186,8 +186,8 @@ extern "C" {
 #define CONFIG_BLE_GAP_SVC_PERI_PRE_CP                   false                /* Enable Peripheral Preferred Connection Parameters */
 
 //Legacy Advertising set
-#define CONFIG_BLE_GAP_ADV_DATA                      {0x02, 0x01, 0x06, 0x0A, 0x09, 0x44, 0x49, 0x4D, 0x4D, 0x45, 0x52, 0x5F, 0x30, 0x31}
-#define CONFIG_BLE_GAP_ADV_DATA_ORIG_LEN             14
+#define CONFIG_BLE_GAP_ADV_DATA                      {0x02, 0x01, 0x06, 0x0A, 0x09, 'D', 'I', 'M', 'M', 'E', 'R', '_', '0', '0', 0x09, 0x16, 0xDA, 0xFE, 0x00, 0x02, 0x00, 0x05, 0x00, 0x00}
+#define CONFIG_BLE_GAP_ADV_DATA_ORIG_LEN             24
 #define CONFIG_BLE_GAP_SCAN_RSP_DATA                 {0x11, 0x07, 0x49, 0x53, 0x53, 0x43, 0xFE, 0x7D, 0x4A, 0xE5, 0x8F, 0xA9, 0x9F, 0xAF, 0xD2, 0x05, 0xE4, 0x55}
 #define CONFIG_BLE_GAP_SCAN_RSP_DATA_ORIG_LEN        18
 #define CONFIG_BLE_GAP_ADV_TX_PWR                    9 /* Advertising TX Power */

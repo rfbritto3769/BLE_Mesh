@@ -56,8 +56,11 @@ extern "C" {
 
 /**************************************************************************************/     
 /****generated sample application code****/
-#define APP_BLE_CREATE_CONN_SCAN_INTERVAL           0x3C
-#define APP_BLE_CREATE_CONN_SCAN_WINDOW             0x1E
+/* Initiator scan, 20 ms every 100 ms (20% duty). The generated default was
+   18.75 ms every 37.5 ms (50%), which starves the connection events of every
+   link this node already holds and times them out with reason 0x08. */
+#define APP_BLE_CREATE_CONN_SCAN_INTERVAL           0xA0
+#define APP_BLE_CREATE_CONN_SCAN_WINDOW             0x20
 #define APP_BLE_CREATE_CONN_INTERVAL_MIN            0x10   
 #define APP_BLE_CREATE_CONN_INTERVAL_MAX            0x10    
 #define APP_BLE_CREATE_CONN_LATENCY                 0
@@ -87,6 +90,15 @@ void APP_WLS_BLE_PairedDeviceDisconnected(BLE_DM_Event_T *p_event);
 void APP_WLS_BLE_PairedDeviceConnected(BLE_DM_Event_T *p_event);
 void APP_BLE_RescanHandler(void);
 void APP_BLE_ConnectNextPeer(void);
+bool APP_BLE_StartScan(void);
+/* Re-evaluates and applies the connection parameters of an incoming link.
+   Safe to call repeatedly; call it whenever the peer's classification
+   changes. */
+void APP_BLE_ApplyLinkConnParams(uint16_t connHandle);
+bool APP_BLE_IsNodeIdObserved(uint8_t nodeId);
+void APP_BLE_MarkPeerRejected(uint8_t nodeId);
+void APP_BLE_MarkPeerDisconnected(uint8_t nodeId);
+void APP_BLE_MarkPeerUnstable(uint8_t nodeId);
 
 #ifdef	__cplusplus
 }

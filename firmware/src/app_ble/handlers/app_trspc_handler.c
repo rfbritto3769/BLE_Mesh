@@ -55,6 +55,7 @@
 #include <stdint.h>
 #include "ble_trspc/ble_trspc.h"
 #include "definitions.h"
+#include "gatt.h"
 #include "app_trspc_handler.h"
 #include "mesh_routing.h"
 #include "app_ble_callbacks.h"
@@ -90,21 +91,53 @@ switch(p_event->eventId)
 
     case BLE_TRSPC_EVT_DL_STATUS:
     {
-        /* TODO: implement your application code.*/
-    }            
+        /* NOT a one-shot "session opened". The server reuses opcode 0x14 for
+           both the CBFC enable response and every credit replenishment, so
+           this fires continuously while data flows. Sending the JOIN on each
+           one creates a feedback loop - the JOIN burns a credit, the refill
+           raises this event again - and makes the peer re-run its admission
+           check, which tears down an established link with JOIN_REDIRECT once
+           it has filled up. Only act on the first one, while the link is
+           still unjoined; MESH_Maintenance retries from there. */
+        uint16_t hdl = p_event->eventField.onDownlinkStatus.connHandle;
+        MeshConn_T *conn = CONN_MGR_GetByHandle(hdl);
+        if (conn != NULL && !conn->topologyReady)
+        {
+            /* DL_STATUS is the first event that proves the CBFC data path is
+               open.  Do not let maintenance or forwarding write before it. */
+            CONN_MGR_SetReady(hdl);
+            MESH_SendHello(hdl);
+            SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TRSPC DL open hdl=0x%04X\r\n", hdl);
+            /* Establish one central link completely before asking the
+               controller to initiate another. */
+            APP_BLE_ConnectNextPeer();
+        }
+    }
     break;
 
     case BLE_TRSPC_EVT_RECEIVE_DATA:
     {
             uint16_t dataLen;
-            uint8_t *p_data;
-            BLE_TRSPC_GetDataLength(p_event->eventField.onReceiveData.connHandle, &dataLen);
-            p_data = OSAL_Malloc(dataLen);
-            if (p_data == NULL)
-                break;
-            BLE_TRSPC_GetData(p_event->eventField.onReceiveData.connHandle, p_data);
-            MESH_ProcessIncoming(p_event->eventField.onReceiveData.connHandle, dataLen, p_data);
-            OSAL_Free(p_data);
+            uint16_t hdl = p_event->eventField.onReceiveData.connHandle;
+            /* Drain every queued packet. BLE_TRSPC_GetData is the only place
+               that returns an uplink CBFC credit to the peer, so a packet left
+               in the queue costs one credit permanently and eventually mutes
+               the peer's notifications towards us. Static buffer: a malloc
+               failure here used to skip the dequeue entirely. */
+            static uint8_t rxBuf[BLE_ATT_MAX_MTU_LEN - ATT_HANDLE_VALUE_HEADER_SIZE];
+
+            for (;;)
+            {
+                BLE_TRSPC_GetDataLength(hdl, &dataLen);
+                /* GetDataLength reports 0 both for an empty queue and for a
+                   zero-length packet, so always attempt the dequeue: a failing
+                   GetData is the only reliable "queue is empty". */
+                if (BLE_TRSPC_GetData(hdl, rxBuf) != 0U)
+                    break;
+                if (dataLen == 0U || dataLen > sizeof(rxBuf))
+                    continue; /* dequeued, so the credit is returned; unusable */
+                MESH_ProcessIncoming(hdl, dataLen, rxBuf);
+            }
     }
     break;
 
@@ -122,10 +155,11 @@ switch(p_event->eventId)
 
     case BLE_TRSPC_EVT_DISC_COMPLETE:
     {
-        CONN_MGR_SetReady(p_event->eventField.onDiscComplete.connHandle);
+        /* Discovery is done but the transport is not open yet: the stack only
+           starts the CBFC downlink handshake after emitting this event. The
+           link is marked ready by MESH_SendHello once a write succeeds. */
         SYS_DEBUG_PRINT(SYS_ERROR_INFO, "TRSPC disc complete hdl=0x%04X\r\n",
             p_event->eventField.onDiscComplete.connHandle);
-        APP_BLE_ConnectNextPeer();
     }
     break;
 

@@ -43,6 +43,7 @@
  *******************************************************************************/
 
 #include "app.h"
+#include "definitions.h"
 #include "osal/osal_freertos_extend.h"
 #include "app_ble.h"
 #include "app_ble_handler.h"
@@ -130,7 +131,14 @@ static void APP_BleStackCb(STACK_Event_T *p_stack)
     ((STACK_Event_T *)appMsg.msgData)->p_event=stackEvent.p_event;
 
     p_appMsg = &appMsg;
-    OSAL_QUEUE_Send(&appData.appQueue, p_appMsg, 0);
+    /* A dropped event leaks its payload and, for RECEIVE_DATA, also leaks a
+       CBFC credit because the app never dequeues the packet. Free the payload
+       at least, and make the loss visible. */
+    if (OSAL_QUEUE_Send(&appData.appQueue, p_appMsg, 0) != OSAL_RESULT_TRUE)
+    {
+        SYS_DEBUG_PRINT(SYS_ERROR_INFO, "App queue FULL, event dropped\r\n");
+        OSAL_Free(stackEvent.p_event);
+    }
 }
 
 void APP_BleStackEvtHandler(STACK_Event_T *p_stackEvt)
@@ -191,12 +199,56 @@ void APP_BleStackEvtHandler(STACK_Event_T *p_stackEvt)
 
 
 
+static uint8_t s_meshAdvData[] = CONFIG_BLE_GAP_ADV_DATA;
+
+void APP_BLE_UpdateTopologyAdvertisement(uint8_t rootId, uint8_t depth,
+    uint8_t freeMeshSlots, uint8_t flags)
+{
+    BLE_GAP_AdvDataParams_T params;
+    s_meshAdvData[20] = flags;
+    s_meshAdvData[21] = freeMeshSlots;
+    s_meshAdvData[22] = rootId;
+    s_meshAdvData[23] = depth;
+    params.advLen = sizeof(s_meshAdvData);
+    memcpy(params.advData, s_meshAdvData, sizeof(s_meshAdvData));
+    (void)BLE_GAP_SetAdvData(&params);
+}
+
+/* Re-applies the whole advertising configuration, not just the enable. Used
+   when a node has been isolated long enough that the advertising state itself
+   is suspect: a node that stops being seen is invisible to every peer and can
+   never be reconnected to, and the ordinary keep-alive only re-issues the
+   enable, which is a no-op if the stack thinks it is already advertising. */
+void APP_BLE_RestartAdvertising(void)
+{
+    BLE_GAP_AdvParams_T advParam;
+    BLE_GAP_AdvDataParams_T advDataParams;
+    uint16_t res;
+
+    (void)BLE_GAP_SetAdvEnable(false, 0U);
+
+    (void)memset(&advParam, 0, sizeof(advParam));
+    advParam.intervalMin = 320;
+    advParam.intervalMax = 640;
+    advParam.type = CONFIG_BLE_GAP_ADV_TYPE;
+    advParam.advChannelMap = CONFIG_BLE_GAP_ADV_CHANNEL_MAP;
+    advParam.filterPolicy = CONFIG_BLE_GAP_ADV_FILT_POLICY;
+    (void)BLE_GAP_SetAdvParams(&advParam);
+
+    advDataParams.advLen = (uint8_t)sizeof(s_meshAdvData);
+    (void)memcpy(advDataParams.advData, s_meshAdvData, sizeof(s_meshAdvData));
+    (void)BLE_GAP_SetAdvData(&advDataParams);
+
+    res = BLE_GAP_SetAdvEnable(true, 0U);
+    SYS_DEBUG_PRINT(SYS_ERROR_INFO, "ADV restart res=0x%04X\r\n", res);
+}
+
 static void APP_BleConfigBasic(void)
 {
     int8_t                          connTxPower;
     int8_t                          advTxPower;
     BLE_GAP_AdvParams_T             advParam;
-    uint8_t advData[] = CONFIG_BLE_GAP_ADV_DATA;
+    uint8_t *advData = s_meshAdvData;
     BLE_GAP_AdvDataParams_T         appAdvData;
     uint8_t scanRspData[] = CONFIG_BLE_GAP_SCAN_RSP_DATA;
     BLE_GAP_AdvDataParams_T         appScanRspData;
@@ -210,12 +262,22 @@ static void APP_BleConfigBasic(void)
     }
     advData[12] = '0' + (advNodeId / 10);
     advData[13] = '0' + (advNodeId % 10);
+    advData[18] = advNodeId;
+    advData[19] = 0x02U;
+    advData[20] = 0x01U;
+    advData[21] = 5U;
+    advData[22] = advNodeId;
+    advData[23] = 0U;
 
     BLE_GAP_SetAdvTxPowerLevel(CONFIG_BLE_GAP_ADV_TX_PWR, &advTxPower);
 
     (void)memset(&advParam, 0, sizeof(BLE_GAP_AdvParams_T));
-    advParam.intervalMin = 160;
-    advParam.intervalMax = 320;
+    /* 200-400 ms. A mesh node advertises permanently while also holding up to
+       six links, so a 100 ms advertising interval is radio time taken away
+       from connection events for no discovery benefit: peers scan 20 ms every
+       100 ms for six seconds and still see this node many times over. */
+    advParam.intervalMin = 320;
+    advParam.intervalMax = 640;
     advParam.type = CONFIG_BLE_GAP_ADV_TYPE;
     advParam.advChannelMap = CONFIG_BLE_GAP_ADV_CHANNEL_MAP;
     advParam.filterPolicy = CONFIG_BLE_GAP_ADV_FILT_POLICY;

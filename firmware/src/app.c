@@ -67,8 +67,6 @@
 #include "led_dimmer.h"
 #include "provisioning.h"
 
-#define APP_BLE_SCAN_DURATION       10000
-
 
 
 
@@ -204,6 +202,24 @@ void APP_Tasks ( void )
         {
             bool appInitialized = true;
 
+            /* Why the node came up. A node that drops off the mesh either
+               restarted (this line names the cause) or is still running but
+               silent, in which case the STATUS lines keep coming. Printing it
+               once at boot makes the two cases distinguishable by plugging the
+               console into whichever node failed, after the fact. Flags are
+               sticky, so clear them for the next boot. */
+            {
+                uint32_t rcon = RCON_REGS->RCON_RCON;
+                RCON_REGS->RCON_RCONCLR = rcon;
+                SYS_DEBUG_PRINT(SYS_ERROR_INFO,
+                    "\r\nRESET RCON=0x%08X%s%s%s%s%s\r\n", (unsigned)rcon,
+                    (rcon & RCON_RCON_POR_Msk)  ? " POR"  : "",
+                    (rcon & RCON_RCON_BOR_Msk)  ? " BOR"  : "",
+                    (rcon & RCON_RCON_WDTO_Msk) ? " WDTO" : "",
+                    (rcon & RCON_RCON_SWR_Msk)  ? " SWR"  : "",
+                    (rcon & RCON_RCON_EXTR_Msk) ? " EXTR" : "");
+            }
+
             PROV_Init();
 
             APP_BleStackInit();
@@ -241,7 +257,7 @@ void APP_Tasks ( void )
 
             vTaskDelay(pdMS_TO_TICKS(1000));
 
-            BLE_GAP_SetScanningEnable(true, BLE_GAP_SCAN_FD_ENABLE, BLE_GAP_SCAN_MODE_OBSERVER, APP_BLE_SCAN_DURATION);
+            (void)APP_BLE_StartScan();
             SYS_DEBUG_PRINT(SYS_ERROR_INFO, "Scanning for peers...\r\n");
 
             if (appInitialized)
@@ -253,7 +269,13 @@ void APP_Tasks ( void )
 
         case APP_STATE_SERVICE_TASKS:
         {
-            if (OSAL_QUEUE_Receive(&appData.appQueue, &appMsg, pdMS_TO_TICKS(5000)))
+            static uint32_t lastMaintenanceTick = 0;
+            static uint32_t lastMeshTick = 0;
+            uint32_t nowTick;
+
+            /* Bounded well below the mesh cycle below, so an idle node still
+               reaches it on time instead of waking only once a second. */
+            if (OSAL_QUEUE_Receive(&appData.appQueue, &appMsg, pdMS_TO_TICKS(100)))
             {
                 if(p_appMsg->msgId==APP_MSG_BLE_STACK_EVT)
                 {
@@ -268,10 +290,38 @@ void APP_Tasks ( void )
                     APP_BLE_RescanHandler();
                 }
             }
-            else
+
+            /* Advertising reports keep the queue busy for the whole discovery
+               window. Drive maintenance from the tick counter so scanning,
+               joining and retransmission also progress under event load. */
+            nowTick = xTaskGetTickCount();
+
+            /* This period is the floor on per-hop forwarding latency for the
+               whole mesh: a packet whose immediate send fails is parked in
+               s_linkTxQueue and only retried here, and at most one reliable
+               retransmission is issued per cycle. At 1 s an eight-hop round
+               trip across a 100 node tree could not fit inside any sane ACK
+               timeout, and queued traffic backed up until it aged out. */
+            if ((nowTick - lastMeshTick) >= pdMS_TO_TICKS(250))
             {
+                lastMeshTick = nowTick;
+                MESH_Maintenance();
+            }
+
+            /* Discovery and link supervision stay on the slow cycle. They
+               issue HCI commands and walk the candidate list; running them
+               four times as often would add radio and CPU load without
+               converging any faster. */
+            if ((nowTick - lastMaintenanceTick) >= pdMS_TO_TICKS(1000))
+            {
+                lastMaintenanceTick = nowTick;
                 APP_BLE_RescanHandler();
                 APP_BLE_ConnectNextPeer();
+                /* GATT discovery and CCC setup must finish before a link is
+                   marked ready. Under six links plus scanning that can take
+                   well over 15 s, and sweeping too early kills healthy links
+                   (and the GUI link, which is only ready once it subscribes). */
+                CONN_MGR_SweepStale(pdMS_TO_TICKS(30000));
             }
             break;
         }
